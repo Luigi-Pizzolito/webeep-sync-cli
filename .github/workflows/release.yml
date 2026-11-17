@@ -137,14 +137,17 @@ jobs:
         run: |
           set -euo pipefail
           tag="$GITHUB_REF_NAME"
+          repo="$GITHUB_REPOSITORY"
           cd dist
           sha256sum ./* > SHA256SUMS
           cat SHA256SUMS
           files=(*)
-          if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload --clobber "$tag" "${files[@]}"
+          # --repo is required: this job has no checkout, so gh has no git
+          # context to work out which repository the release belongs to.
+          if gh release view --repo "$repo" "$tag" >/dev/null 2>&1; then
+            gh release upload --clobber --repo "$repo" "$tag" "${files[@]}"
           else
-            gh release create "$tag" "${files[@]}" \
+            gh release create --repo "$repo" "$tag" "${files[@]}" \
               --verify-tag --title "$tag" \
               --notes 'Builds of webeep-sync-cli. On Arch, install the package with sudo pacman -U ./webeep-sync-cli-<version>-x86_64.pkg.tar.zst on an up to date install; the tarballs are plain static binaries for Linux.'
           fi
