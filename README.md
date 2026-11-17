@@ -36,8 +36,9 @@ finished.
 ## Requirements
 
 Go 1.24.2 or newer to build (the terminal UI dependencies need it). Linux and
-macOS are exercised by the local test suite and by CI; Windows builds are
-expected to work but are untested until end-to-end verification is done.
+macOS are exercised by the local test suite and by CI. Windows builds compile
+and vet clean in CI and ship in every release, but no one has run one end to
+end yet, so treat them as untested.
 
 ## Quickstart
 
@@ -96,12 +97,12 @@ produces `webeep-sync-cli-0.1-1-x86_64.pkg.tar.zst`, and the binary reports
 install with `sudo pacman -U ./webeep-sync-cli-0.1-1-x86_64.pkg.tar.zst`. Clear
 the build directories with `makepkg -C` or `rm -rf src pkg`.
 
-A tagged release also carries a prebuilt Arch package and Linux tarballs, so you
-can download `webeep-sync-cli-<version>-1-x86_64.pkg.tar.zst` from the release
-and install it with `sudo pacman -U` instead of building.
+A tagged release also carries a prebuilt Arch package plus binaries for Linux,
+macOS and Windows, so you can download
+`webeep-sync-cli-<version>-1-x86_64.pkg.tar.zst` from the release and install it
+with `sudo pacman -U` instead of building.
 
 </details>
-
 
 `doctor` output on a working setup:
 
@@ -294,11 +295,22 @@ git tag v0.2 && git push origin v0.2
 ```
 
 `ci.yml` runs `go vet`, `gofmt` and `go test -race` on Linux and macOS for every
-push to `main` and every pull request. `release.yml` runs the same checks on a
-`v*` tag, then builds the Arch package with `makepkg` inside an Arch Linux
-container, builds static `linux/amd64` and `linux/arm64` binaries, and publishes
-everything with a `SHA256SUMS` file as a GitHub Release named after the tag. The
-version stamped into the binary is the tag name.
+push to `main` and every pull request, plus a `GOOS=windows` and `GOOS=darwin`
+vet so the shipped-but-untested targets keep compiling. `release.yml` runs the
+same checks on a `v*` tag, then builds the Arch package with `makepkg` inside an
+Arch Linux container, then cross builds static binaries for `linux/amd64`,
+`linux/arm64`, `darwin/amd64`, `darwin/arm64`, `windows/amd64` and
+`windows/arm64` — tarballs for the Unix targets, zips holding `webeep-sync-cli.exe`
+for Windows — and publishes everything with a `SHA256SUMS` file as a GitHub
+Release named after the tag. The version stamped into the binary is the tag name.
+
+Each archive holds the binary next to `LICENSE` and `README.md`. The macOS
+binaries are not code signed or notarized, so the first launch needs the
+quarantine attribute cleared:
+
+```bash
+xattr -d com.apple.quarantine webeep-sync-cli
+```
 
 The test suite covers token parsing from all three login formats, the file
 layout builder (module exclusions, "Materiali" flattening, single-file
