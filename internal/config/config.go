@@ -19,7 +19,12 @@ const DefaultBaseURL = "https://webeep.polimi.it"
 // CoursePrefs are the per-course settings kept in config.json. A nil field
 // means "use the default".
 type CoursePrefs struct {
-	Name *string `json:"name,omitempty"` // download folder override
+	// Name is a folder-name override. Deprecated: Path does the same job and
+	// also allows a semester level.
+	Name *string `json:"name,omitempty"`
+	// Path is the folder the course syncs into, relative to the download root,
+	// and may nest: "Y1S1/Biochip".
+	Path *string `json:"path,omitempty"`
 	Sync *bool   `json:"sync,omitempty"` // false disables syncing this course
 }
 

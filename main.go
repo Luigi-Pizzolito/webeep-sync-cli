@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -46,8 +47,12 @@ func main() {
 		err = cmdCourses(args)
 	case "course":
 		err = cmdCourse(args)
+	case "dir":
+		err = cmdDir(args)
 	case "sync":
 		err = cmdSync(args)
+	case "ui", "tui":
+		err = cmdUI(args)
 	case "doctor":
 		err = cmdDoctor(args)
 	case "version":
@@ -70,13 +75,17 @@ func usage() {
 	fmt.Println(`webeep-sync-cli - keep WeBeep course files synced locally, rsync-style
 
 Usage:
-  webeep-sync-cli login    [--token T|--url U|--cookie C|--username U]   obtain a web service token
-  webeep-sync-cli logout                                                forget the saved token
-  webeep-sync-cli whoami                                                show the logged-in account
-  webeep-sync-cli courses                                               list enrolled courses
-  webeep-sync-cli course enable|disable|rename <id> [name]             configure single courses
-  webeep-sync-cli sync   [flags]                                        download new/changed files
-  webeep-sync-cli doctor                                                check endpoints and token
+  webeep-sync-cli ui                                                    interactive course/folder picker
+  webeep-sync-cli login    [--token T|--url U|--cookie C|--username U] obtain a web service token
+  webeep-sync-cli logout                                               forget the saved token
+  webeep-sync-cli whoami                                               show the logged-in account
+  webeep-sync-cli dir [path|--clear]                                   show or set the folder courses live in
+  webeep-sync-cli courses                                              list enrolled courses
+  webeep-sync-cli course enable|disable <id>                          include or skip one course
+  webeep-sync-cli course path <id> "Y1S1/Biochip"                    map it to a local folder
+  webeep-sync-cli course rename <id> [name]                           (same as path)
+  webeep-sync-cli sync   [flags]                                       download new/changed files
+  webeep-sync-cli doctor                                               check endpoints and token
   webeep-sync-cli version`)
 }
 
@@ -213,7 +222,29 @@ func cmdLogin(args []string) error {
 	dir, _ := config.Dir()
 	fmt.Printf("Logged in as %s (site: %s)\ntoken stored in %s/token.json (keep it private)\n",
 		info.FullName, info.SiteName, dir)
-	return nil
+	return askDownloadDirOnce()
+}
+
+// askDownloadDirOnce asks where course folders should live, but only if that has
+// not been configured yet (and only when we can actually ask).
+func askDownloadDirOnce() error {
+	if !stdinInteractive() {
+		return nil
+	}
+	conf, err := config.Load()
+	if err != nil {
+		return err
+	}
+	if conf.DownloadDir != "" {
+		fmt.Printf("course folders sync under %s (`webeep-sync-cli dir <folder>` changes it)\n", conf.DownloadDir)
+		return nil
+	}
+	dir, err := promptDownloadDir(conf)
+	if err != nil {
+		return err
+	}
+	conf.DownloadDir = dir
+	return conf.Save()
 }
 
 func cmdLogout() error {
@@ -253,39 +284,71 @@ type resolvedCourse struct {
 	Sync   bool
 }
 
-// resolveCourses applies config preferences to the remote course list and
-// picks collision-free folder names.
-func resolveCourses(courses []moodle.CourseSummary, conf *config.Config) []resolvedCourse {
-	defaults := make(map[int64]string, len(courses))
-	count := make(map[string]int, len(courses))
+// coursePath returns the local folder a course is mapped to in the config, or
+// "" when it should keep the default (its WeBeep name).
+func coursePath(prefs config.CoursePrefs) string {
+	raw := ""
+	switch {
+	case prefs.Path != nil && strings.TrimSpace(*prefs.Path) != "":
+		raw = *prefs.Path
+	case prefs.Name != nil && strings.TrimSpace(*prefs.Name) != "":
+		raw = *prefs.Name
+	}
+	return sanitizeCoursePath(raw)
+}
+
+// sanitizeCoursePath cleans user input like " Y1S1 / Biochip " into
+// "Y1S1/Biochip". Mappings are always relative to the download root: absolute
+// paths and anything that walks up with ".." are refused ("" is returned).
+func sanitizeCoursePath(p string) string {
+	p = filepath.ToSlash(strings.TrimSpace(p))
+	if p == "" || strings.HasPrefix(p, "/") {
+		return ""
+	}
+	var out []string
+	for _, seg := range strings.Split(p, "/") {
+		seg = fsx.Sanitize(seg)
+		if seg == ".." {
+			return ""
+		}
+		if seg == "" {
+			continue
+		}
+		out = append(out, seg)
+	}
+	return strings.Join(out, "/")
+}
+
+// resolveCourses applies config preferences to the remote course list and picks
+// collision-free folder names. It returns the rows plus warnings worth showing
+// to the user (the UI prints them in its own status area).
+func resolveCourses(courses []moodle.CourseSummary, conf *config.Config) ([]resolvedCourse, []string) {
+	var warnings []string
+	used := make(map[string]struct{}, len(courses))
+	out := make([]resolvedCourse, 0, len(courses))
+
 	for _, c := range courses {
+		prefs := conf.CoursePrefs(c.ID)
 		dir := fsx.Sanitize(moodle.DefaultCourseDir(c.FullName))
 		if dir == "" {
 			dir = fmt.Sprintf("course-%d", c.ID)
 		}
-		defaults[c.ID] = dir
-		count[dir]++
-	}
-
-	used := make(map[string]struct{}, len(courses))
-	out := make([]resolvedCourse, 0, len(courses))
-	for _, c := range courses {
-		prefs := conf.CoursePrefs(c.ID)
-		dir := defaults[c.ID]
-		if prefs.Name != nil && *prefs.Name != "" {
-			dir = fsx.Sanitize(*prefs.Name)
+		if mapped := coursePath(prefs); mapped != "" {
+			dir = mapped
 		}
+
 		if _, taken := used[dir]; taken {
 			// Two courses would share a folder: fall back to the full name.
 			if alt := fsx.Sanitize(c.FullName); alt != "" && alt != dir {
 				if _, taken := used[alt]; !taken {
-					fmt.Fprintf(os.Stderr, "warning: %q clashes with another course, using %q instead\n", dir, alt)
+					warnings = append(warnings, fmt.Sprintf("%q is claimed by another course: %q syncs to %q instead", dir, c.DisplayName, alt))
 					dir = alt
 				}
 			}
 		}
 		if _, taken := used[dir]; taken {
 			dir = fmt.Sprintf("%s (%d)", dir, c.ID)
+			warnings = append(warnings, fmt.Sprintf("no free folder name left: %q syncs to %q", c.DisplayName, dir))
 		}
 		used[dir] = struct{}{}
 
@@ -295,17 +358,13 @@ func resolveCourses(courses []moodle.CourseSummary, conf *config.Config) []resol
 		}
 		out = append(out, resolvedCourse{CourseSummary: c, Folder: dir, Sync: sync})
 	}
-	return out
+	return out, warnings
 }
 
 func cmdCourses(args []string) error {
 	fs := flag.NewFlagSet("courses", flag.ExitOnError)
 	fs.Parse(args)
 
-	client, _, err := tokenClient()
-	if err != nil {
-		return err
-	}
 	conf, err := config.Load()
 	if err != nil {
 		return err
@@ -313,28 +372,31 @@ func cmdCourses(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 
-	info, err := client.GetSiteInfo(ctx)
+	// List every course, even disabled ones, so the mapping is easy to see.
+	opts := defaultSyncOptions()
+	opts.All = true
+	target, err := prepareSync(ctx, conf, opts)
 	if err != nil {
-		return friendlyAPIError(err)
+		return err
 	}
-	remote, err := client.GetUserCourses(ctx, info.UserID)
-	if err != nil {
-		return friendlyAPIError(err)
+	for _, w := range target.warnings {
+		fmt.Fprintln(os.Stderr, "warning: "+w)
 	}
-	resolved := resolveCourses(remote, conf)
 
-	fmt.Printf("%-10s %-5s  %-40s  %s\n", "ID", "SYNC", "DOWNLOAD FOLDER", "WE BEEP FULL NAME")
-	for _, c := range resolved {
+	fmt.Printf("%-10s %-5s  %-38s  %s\n", "ID", "SYNC", "LOCAL FOLDER", "WE BEEP COURSE")
+	for _, c := range target.rows {
 		mark := "no"
 		if c.Sync {
 			mark = "yes"
 		}
 		full := ""
-		if c.FullName != c.Folder {
+		if c.Folder != c.DisplayName {
 			full = c.FullName
 		}
-		fmt.Printf("%-10d %-5s  %-40s  %s\n", c.ID, mark, truncate(c.Folder, 40), full)
+		fmt.Printf("%-10d %-5s  %-38s  %s\n", c.ID, mark, truncate(c.Folder, 38), full)
 	}
+	fmt.Printf("\nlocal root: %s\n", target.dir)
+	fmt.Println("map a course: webeep-sync-cli course path <id> \"Y1S1/Biochip\"   (or: webeep-sync-cli ui)")
 	return nil
 }
 
@@ -346,8 +408,11 @@ func truncate(s string, n int) string {
 }
 
 func cmdCourse(args []string) error {
+	if len(args) > 0 && args[0] == "list" {
+		return cmdCourses(nil)
+	}
 	if len(args) < 2 {
-		return fmt.Errorf("usage: webeep-sync-cli course enable|disable|rename <course-id> [new folder name]")
+		return fmt.Errorf("usage: webeep-sync-cli course list|enable|disable|path|rename <course-id> [folder]")
 	}
 	action, idArg := args[0], args[1]
 	id, err := strconv.ParseInt(idArg, 10, 64)
@@ -370,13 +435,36 @@ func cmdCourse(args []string) error {
 	case "rename":
 		name := strings.TrimSpace(strings.Join(args[2:], " "))
 		if name == "" {
+			prefs.Path = nil
 			prefs.Name = nil
 		} else {
-			name = fsx.Sanitize(name)
-			prefs.Name = &name
+			p := sanitizeCoursePath(name)
+			if p == "" {
+				return fmt.Errorf("%q is not a usable folder path (relative to the download folder, and no '..')", name)
+			}
+			prefs.Path = &p
+		}
+	case "path":
+		// The folder is one argument, so quote it: course path 18804 "Y1S1/Biochip"
+		if len(args) > 3 {
+			return fmt.Errorf("give the folder as a single argument: webeep-sync-cli course path %s \"Y1S1/Biochip\"", idArg)
+		}
+		value := ""
+		if len(args) == 3 {
+			value = strings.TrimSpace(args[2])
+		}
+		if value == "" {
+			prefs.Path = nil
+			prefs.Name = nil
+		} else {
+			p := sanitizeCoursePath(value)
+			if p == "" {
+				return fmt.Errorf("%q is not a usable folder path (relative to the download folder, and no '..')", value)
+			}
+			prefs.Path = &p
 		}
 	default:
-		return fmt.Errorf("unknown action %q (use enable, disable or rename)", action)
+		return fmt.Errorf("unknown action %q (use enable, disable, path or rename)", action)
 	}
 	conf.SetCoursePrefs(id, prefs)
 	if err := conf.Save(); err != nil {
@@ -395,13 +483,271 @@ func describePrefs(p config.CoursePrefs) string {
 			sync = "will NOT sync"
 		}
 	}
-	if p.Name != nil && *p.Name != "" {
-		sync += fmt.Sprintf(", folder %q", *p.Name)
+	if mapped := coursePath(p); mapped != "" {
+		sync += fmt.Sprintf(", folder %q", mapped)
 	}
 	return sync
 }
 
+// --- the download root -------------------------------------------------------
+
+func cmdDir(args []string) error {
+	fs := flag.NewFlagSet("dir", flag.ExitOnError)
+	clearFlag := fs.Bool("clear", false, "forget the configured folder (falls back to ~/WeBeep)")
+	fs.Parse(args)
+
+	conf, err := config.Load()
+	if err != nil {
+		return err
+	}
+	rest := fs.Args()
+	switch {
+	case *clearFlag:
+		conf.DownloadDir = ""
+		if err := conf.Save(); err != nil {
+			return err
+		}
+		fmt.Println("download folder cleared: course folders will go under ~/WeBeep")
+	case len(rest) > 1:
+		return fmt.Errorf("usage: webeep-sync-cli dir [folder] | --clear")
+	case len(rest) == 0:
+		if conf.DownloadDir == "" {
+			fmt.Println("~/WeBeep (not configured: this is the fallback)")
+		} else {
+			fmt.Println(conf.DownloadDir)
+		}
+	default:
+		dir := expandTilde(strings.TrimSpace(rest[0]))
+		if !filepath.IsAbs(dir) {
+			return fmt.Errorf("%s is not an absolute path (try /home/you/School/PoliMi or ~/School/PoliMi)", rest[0])
+		}
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("creating %s: %w", dir, err)
+		}
+		conf.DownloadDir = dir
+		if err := conf.Save(); err != nil {
+			return err
+		}
+		fmt.Printf("course folders will sync under %s\n", dir)
+	}
+	return nil
+}
+
 // --- sync --------------------------------------------------------------------
+
+// --- sync plumbing shared by 'sync' and the UI -------------------------------
+
+// syncOptions are the knobs of a sync run.
+type syncOptions struct {
+	Dir         string   // download root for this run
+	Courses     []string // --course patterns
+	All         bool
+	NoOverwrite bool
+	Clobber     bool
+	Workers     int
+	ExtraMods   []string
+	Quiet       bool
+}
+
+// defaultSyncOptions is a plain run: default workers, no filters.
+func defaultSyncOptions() syncOptions { return syncOptions{Workers: 3} }
+
+// syncTarget is a prepared run: the account, the download root and the courses
+// the current configuration selects.
+type syncTarget struct {
+	conf     *config.Config
+	client   *moodle.Client
+	user     string
+	dir      string
+	remote   []moodle.CourseSummary
+	rows     []resolvedCourse
+	warnings []string
+	chosen   []resolvedCourse
+	skipped  int
+}
+
+// prepareSync checks the stored token and works out which course folders go
+// into which download root.
+func prepareSync(ctx context.Context, conf *config.Config, opts syncOptions) (*syncTarget, error) {
+	client, _, err := tokenClient()
+	if err != nil {
+		return nil, err
+	}
+	dir := opts.Dir
+	if dir == "" {
+		dir = conf.DownloadDir
+	}
+	if dir == "" {
+		dir = filepath.Join("~", "WeBeep")
+	}
+	dir = expandTilde(dir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("creating download folder %s: %w", dir, err)
+	}
+
+	info, err := client.GetSiteInfo(ctx)
+	if err != nil {
+		return nil, friendlyAPIError(err)
+	}
+	remote, err := client.GetUserCourses(ctx, info.UserID)
+	if err != nil {
+		return nil, friendlyAPIError(err)
+	}
+	rows, warnings := resolveCourses(remote, conf)
+	chosen, skipped := selectCourses(rows, opts)
+	return &syncTarget{
+		conf:     conf,
+		client:   client,
+		user:     info.FullName,
+		dir:      dir,
+		remote:   remote,
+		rows:     rows,
+		warnings: warnings,
+		chosen:   chosen,
+		skipped:  skipped,
+	}, nil
+}
+
+// selectCourses applies the per-course switches and the --course/--all flags.
+func selectCourses(resolved []resolvedCourse, opts syncOptions) (chosen []resolvedCourse, skipped int) {
+	for _, c := range resolved {
+		include := c.Sync
+		if opts.All {
+			include = true
+		}
+		if len(opts.Courses) > 0 {
+			include = false
+			for _, pattern := range opts.Courses {
+				if nameMatches(c, pattern) {
+					include = true
+					break
+				}
+			}
+		}
+		if !include {
+			skipped++
+			continue
+		}
+		chosen = append(chosen, c)
+	}
+	return chosen, skipped
+}
+
+// plan asks WeBeep what the selected courses contain and classifies every file
+// against what is already in the download folder. The returned manifest already
+// has adopted and protected entries recorded.
+func (t *syncTarget) plan(ctx context.Context, opts syncOptions) ([]syncpkg.Action, *syncpkg.Manifest, error) {
+	exclude := append(append([]string{}, moodle.DefaultExcludeMods...), t.conf.ExcludeMods...)
+	exclude = append(exclude, opts.ExtraMods...)
+
+	// Fetch the contents of all selected courses concurrently (bounded).
+	type courseFetch struct {
+		course   resolvedCourse
+		sections []moodle.Section
+		err      error
+	}
+	results := make([]courseFetch, len(t.chosen))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 4)
+	for i, c := range t.chosen {
+		wg.Add(1)
+		go func(i int, c resolvedCourse) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			sections, err := t.client.GetCourseContents(ctx, c.ID)
+			results[i] = courseFetch{course: c, sections: sections, err: err}
+		}(i, c)
+	}
+	wg.Wait()
+
+	var entries []moodle.FileEntry
+	for _, r := range results {
+		if r.err != nil {
+			return nil, nil, friendlyAPIError(fmt.Errorf("fetching contents of %s: %w", r.course.FullName, r.err))
+		}
+		entries = append(entries, moodle.CollectFiles(r.course.ID, r.course.Folder, r.sections, exclude)...)
+	}
+
+	manifest := syncpkg.LoadManifest(t.dir)
+	actions := syncpkg.Plan(entries, t.dir, manifest, syncpkg.PlanOpts{
+		NoOverwrite: opts.NoOverwrite,
+		Clobber:     opts.Clobber,
+	})
+	return actions, manifest, nil
+}
+
+// countActions tallies the plan by kind.
+func countActions(actions []syncpkg.Action) map[syncpkg.ActionKind]int {
+	counts := make(map[syncpkg.ActionKind]int)
+	for _, a := range actions {
+		counts[a.Kind]++
+	}
+	return counts
+}
+
+// stdinInteractive reports whether it is possible to ask the user a question.
+func stdinInteractive() bool {
+	info, err := os.Stdin.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
+
+// promptDownloadDir asks where course folders should live.
+func promptDownloadDir(conf *config.Config) (string, error) {
+	current := conf.DownloadDir
+	if current == "" {
+		current = filepath.Join("~", "WeBeep")
+	}
+	for {
+		answer, err := readLine(fmt.Sprintf("which folder should your course folders live in? [%s]: ", current))
+		if err != nil {
+			return "", err
+		}
+		if answer == "" {
+			answer = current
+		}
+		dir := expandTilde(answer)
+		if !filepath.IsAbs(dir) {
+			fmt.Printf("%s is not an absolute path (try /home/you/School/PoliMi or ~/School/PoliMi)\n", dir)
+			continue
+		}
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return "", fmt.Errorf("creating %s: %w", dir, err)
+		}
+		fmt.Printf("course folders will sync under %s\n", dir)
+		return dir, nil
+	}
+}
+
+// localCourseDirs lists folders that already exist under the download root, up
+// to two levels deep (for example "Y1S1/Biochip"), as suggestions when mapping
+// a course. Hidden folders and sync-tool folders are skipped.
+func localCourseDirs(root string) []string {
+	skip := map[string]bool{".stfolder": true, ".stversions": true, ".sync": true, ".snapshot": true, ".git": true, "node_modules": true}
+	var out []string
+	top, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+	for _, d := range top {
+		if !d.IsDir() || skip[d.Name()] || strings.HasPrefix(d.Name(), ".") {
+			continue
+		}
+		out = append(out, d.Name())
+		sub, err := os.ReadDir(filepath.Join(root, d.Name()))
+		if err != nil {
+			continue
+		}
+		for _, s := range sub {
+			if !s.IsDir() || skip[s.Name()] || strings.HasPrefix(s.Name(), ".") {
+				continue
+			}
+			out = append(out, d.Name()+"/"+s.Name())
+		}
+	}
+	sort.Strings(out)
+	return out
+}
 
 func cmdSync(args []string) error {
 	fs := flag.NewFlagSet("sync", flag.ExitOnError)
@@ -422,23 +768,28 @@ func cmdSync(args []string) error {
 	if err != nil {
 		return err
 	}
-	client, _, err := tokenClient()
-	if err != nil {
-		return err
+
+	// First run: ask where the course folders should live, then remember it.
+	if *dirFlag == "" && conf.DownloadDir == "" && !*quiet && stdinInteractive() {
+		dir, err := promptDownloadDir(conf)
+		if err != nil {
+			return err
+		}
+		conf.DownloadDir = dir
+		if err := conf.Save(); err != nil {
+			return err
+		}
 	}
 
-	dir := *dirFlag
-	if dir == "" {
-		dir = conf.DownloadDir
+	opts := syncOptions{
+		Dir:         expandTilde(*dirFlag),
+		Courses:     courseFlags,
+		All:         *all,
+		NoOverwrite: *noOverwrite,
+		Clobber:     *clobber,
+		ExtraMods:   extraMods,
+		Quiet:       *quiet,
 	}
-	if dir == "" {
-		dir = filepath.Join("~", "WeBeep")
-	}
-	dir = expandTilde(dir)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("creating download folder %s: %w", dir, err)
-	}
-
 	nWorkers := *workers
 	if nWorkers <= 0 {
 		nWorkers = conf.Workers
@@ -446,93 +797,37 @@ func cmdSync(args []string) error {
 	if nWorkers <= 0 {
 		nWorkers = 3
 	}
-
-	exclude := append(append([]string{}, moodle.DefaultExcludeMods...), conf.ExcludeMods...)
-	exclude = append(exclude, extraMods...)
+	opts.Workers = nWorkers
 
 	ctx, stop := ctxWithInterrupt()
 	defer stop()
 
-	info, err := client.GetSiteInfo(ctx)
+	target, err := prepareSync(ctx, conf, opts)
 	if err != nil {
-		return friendlyAPIError(err)
+		return err
 	}
-	remote, err := client.GetUserCourses(ctx, info.UserID)
-	if err != nil {
-		return friendlyAPIError(err)
-	}
-	resolved := resolveCourses(remote, conf)
+	client, dir := target.client, target.dir
 
-	var chosen []resolvedCourse
-	skipped := 0
-	for _, c := range resolved {
-		include := c.Sync
-		if *all {
-			include = true
-		}
-		if len(courseFlags) > 0 {
-			include = false
-			for _, pattern := range courseFlags {
-				if nameMatches(c, pattern) {
-					include = true
-					break
-				}
-			}
-		}
-		if !include {
-			skipped++
-			continue
-		}
-		chosen = append(chosen, c)
-	}
-	if len(chosen) == 0 {
-		fmt.Println("no courses selected for syncing (see `webeep-sync-cli courses` and the --course/--all flags)")
+	if len(target.chosen) == 0 {
+		fmt.Println("no courses selected for syncing (see `webeep-sync-cli courses`, `webeep-sync-cli ui`, or the --course/--all flags)")
 		return nil
 	}
 
 	fmt.Printf("webeep-sync-cli %s\n", version)
-	fmt.Printf("user %s | %d course(s) -> %s\n", info.FullName, len(chosen), dir)
-
-	// Fetch contents of all selected courses concurrently (bounded).
-	type courseFetch struct {
-		course   resolvedCourse
-		sections []moodle.Section
-		err      error
+	fmt.Printf("user %s | %d course(s) -> %s\n", target.user, len(target.chosen), dir)
+	for _, c := range target.chosen {
+		fmt.Printf("  %-42s  <-  %s\n", truncate(c.Folder, 42), c.FullName)
 	}
-	results := make([]courseFetch, len(chosen))
-	{
-		var wg sync.WaitGroup
-		sem := make(chan struct{}, 4)
-		for i, c := range chosen {
-			wg.Add(1)
-			go func(i int, c resolvedCourse) {
-				defer wg.Done()
-				sem <- struct{}{}
-				defer func() { <-sem }()
-				sections, err := client.GetCourseContents(ctx, c.ID)
-				results[i] = courseFetch{course: c, sections: sections, err: err}
-			}(i, c)
-		}
-		wg.Wait()
-	}
-	var entries []moodle.FileEntry
-	for _, r := range results {
-		if r.err != nil {
-			return friendlyAPIError(fmt.Errorf("fetching contents of %s: %w", r.course.FullName, r.err))
-		}
-		entries = append(entries, moodle.CollectFiles(r.course.ID, r.course.Folder, r.sections, exclude)...)
+	if target.skipped > 0 {
+		fmt.Printf("  %d course(s) skipped (re-enable with `webeep-sync-cli course enable <id>`)\n", target.skipped)
 	}
 
-	manifest := syncpkg.LoadManifest(dir)
-	actions := syncpkg.Plan(entries, dir, manifest, syncpkg.PlanOpts{
-		NoOverwrite: *noOverwrite,
-		Clobber:     *clobber,
-	})
-
-	counts := make(map[syncpkg.ActionKind]int)
-	for _, a := range actions {
-		counts[a.Kind]++
+	actions, manifest, err := target.plan(ctx, opts)
+	if err != nil {
+		return err
 	}
+
+	counts := countActions(actions)
 	fmt.Printf("plan: %d new, %d update, %d unchanged, %d adopted, %d protected, %d kept(--no-overwrite), %d 404-cached, %d local-dir conflicts\n",
 		counts[syncpkg.ActionNew], counts[syncpkg.ActionUpdate], counts[syncpkg.ActionUnchanged],
 		counts[syncpkg.ActionAdopt], counts[syncpkg.ActionProtected]+counts[syncpkg.ActionProtectedChanged],
@@ -557,6 +852,29 @@ func cmdSync(args []string) error {
 		}
 		fmt.Println("dry run: nothing was changed")
 		return nil
+	}
+
+	// Files you edited yourself are never touched unless you say otherwise.
+	if n := counts[syncpkg.ActionProtectedChanged]; n > 0 && !*clobber {
+		if !stdinInteractive() || *quiet {
+			fmt.Printf("note: %d file(s) you edited have newer versions on WeBeep; yours stay as they are (use --clobber to replace them)\n", n)
+		} else {
+			answer, err := readLine(fmt.Sprintf("%d file(s) you edited have a newer version on WeBeep. Replace yours? [y/N]: ", n))
+			if err != nil {
+				return err
+			}
+			if answer == "" {
+				answer = "no"
+			}
+			if strings.HasPrefix(strings.ToLower(answer), "y") {
+				clobbered := syncpkg.ClobberProtected(actions, manifest)
+				counts[syncpkg.ActionUpdate] += clobbered
+				counts[syncpkg.ActionProtectedChanged] -= clobbered
+				fmt.Printf("replacing %d file(s) with the version on WeBeep\n", clobbered)
+			} else {
+				fmt.Println("keeping your edited copies")
+			}
+		}
 	}
 
 	if err := manifest.Save(dir); err != nil {

@@ -361,8 +361,13 @@ var ErrTokenRejected = errors.New("download was redirected to the login page: th
 // DownloadFile streams fileURL into dst (atomically), adding the web service
 // token to the query like the WeBeep web app does. Transient errors are
 // retried; 404 returns ErrNotFound without retrying. It returns the number of
-// bytes written.
-func (c *Client) DownloadFile(ctx context.Context, fileURL, dst string) (int64, error) {
+// bytes written. An optional callback receives cumulative bytes while the
+// body is streaming, for progress display.
+func (c *Client) DownloadFile(ctx context.Context, fileURL, dst string, onProgress ...func(int64)) (int64, error) {
+	var progress func(int64)
+	if len(onProgress) > 0 {
+		progress = onProgress[0]
+	}
 	u, err := url.Parse(fileURL)
 	if err != nil {
 		return 0, fmt.Errorf("bad file url %q: %w", fileURL, err)
@@ -414,7 +419,7 @@ func (c *Client) DownloadFile(ctx context.Context, fileURL, dst string) (int64, 
 			resp.Body.Close()
 			return 0, fmt.Errorf("GET %s: unexpected HTTP %d", u.Redacted(), resp.StatusCode)
 		}
-		n, writeErr := writeToTemp(resp.Body, dst)
+		n, writeErr := writeToTemp(resp.Body, dst, progress)
 		resp.Body.Close()
 		if writeErr != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
@@ -429,8 +434,9 @@ func (c *Client) DownloadFile(ctx context.Context, fileURL, dst string) (int64, 
 }
 
 // writeToTemp copies the body into a hidden temporary file in dst's directory
-// and renames it into place.
-func writeToTemp(body io.Reader, dst string) (int64, error) {
+// and renames it into place. When onProgress is non-nil it receives the
+// cumulative bytes written, roughly once per chunk.
+func writeToTemp(body io.Reader, dst string, onProgress func(int64)) (int64, error) {
 	dir := filepath.Dir(dst)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return 0, err
@@ -441,7 +447,7 @@ func writeToTemp(body io.Reader, dst string) (int64, error) {
 	}
 	name := tmp.Name()
 	defer os.Remove(name) // no-op after a successful rename
-	n, err := io.Copy(tmp, body)
+	n, err := io.Copy(tmp, &progressReader{src: body, onProgress: onProgress})
 	if err != nil {
 		tmp.Close()
 		return 0, fmt.Errorf("downloading to disk: %w", err)
@@ -458,4 +464,26 @@ func writeToTemp(body io.Reader, dst string) (int64, error) {
 		return 0, err
 	}
 	return n, os.Rename(name, dst)
+}
+
+// progressReader counts bytes as they stream, reporting at most once per
+// progressChunk so a progress display is not updated per network read.
+type progressReader struct {
+	src        io.Reader
+	onProgress func(int64)
+	read       int64
+	reported   int64
+}
+
+// progressChunk is how many bytes may pass between two progress reports.
+const progressChunk = 256 * 1024
+
+func (p *progressReader) Read(b []byte) (int, error) {
+	n, err := p.src.Read(b)
+	p.read += int64(n)
+	if p.onProgress != nil && (err != nil || p.read-p.reported >= progressChunk) {
+		p.reported = p.read
+		p.onProgress(p.read)
+	}
+	return n, err
 }

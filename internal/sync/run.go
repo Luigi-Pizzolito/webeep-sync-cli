@@ -25,11 +25,14 @@ type Stats struct {
 	Bytes    int64
 }
 
-// Callbacks report progress while running; they are called under a lock, so
-// they need no extra synchronisation of their own.
+// Callbacks report progress while running; OnDone and OnFail are called under
+// a lock, so they need no extra synchronisation of their own. OnProgress is
+// called from the downloading worker with the bytes streamed so far for the
+// current file.
 type Callbacks struct {
-	OnDone func(a Action, written int64, completed, total int)
-	OnFail func(a Action, err error)
+	OnDone     func(a Action, written int64, completed, total int)
+	OnFail     func(a Action, err error)
+	OnProgress func(a Action, downloaded int64)
 }
 
 // Run downloads all pending actions with a bounded worker pool. After each
@@ -72,7 +75,11 @@ func Run(ctx context.Context, c *moodle.Client, actions []Action, root string, m
 				if ctx.Err() != nil {
 					continue // interrupted: drop the rest of the queue
 				}
-				written, err := c.DownloadFile(ctx, a.Entry.URL, a.LocalPath)
+				var onProgress func(int64)
+				if cb.OnProgress != nil {
+					onProgress = func(n int64) { cb.OnProgress(a, n) }
+				}
+				written, err := c.DownloadFile(ctx, a.Entry.URL, a.LocalPath, onProgress)
 				mu.Lock()
 				switch {
 				case err == nil:

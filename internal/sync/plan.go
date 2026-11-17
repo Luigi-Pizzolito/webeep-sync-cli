@@ -208,6 +208,29 @@ func Plan(entries []moodle.FileEntry, root string, m *Manifest, opts PlanOpts) [
 	return actions
 }
 
+// ClobberProtected reclassifies "protected, but WeBeep has a newer version"
+// actions as downloads, which is what --clobber does, and records those files
+// as WeBeep-owned in the manifest. It returns how many actions changed.
+func ClobberProtected(actions []Action, m *Manifest) int {
+	changed := 0
+	for i := range actions {
+		if actions[i].Kind != ActionProtectedChanged {
+			continue
+		}
+		actions[i].Kind = ActionUpdate
+		if rec, ok := m.get(actions[i].Entry.RelPath); ok {
+			rec.Protected = false
+			rec.Size = actions[i].Entry.Size
+			rec.TimeModified = actions[i].Entry.TimeModified
+			m.set(actions[i].Entry.RelPath, rec)
+		} else {
+			m.set(actions[i].Entry.RelPath, Entry{Size: actions[i].Entry.Size, TimeModified: actions[i].Entry.TimeModified})
+		}
+		changed++
+	}
+	return changed
+}
+
 func remoteChanged(rec Entry, e moodle.FileEntry) bool {
 	if rec.TimeModified != e.TimeModified {
 		return true
