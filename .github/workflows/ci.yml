@@ -1,9 +1,14 @@
 name: ci
 
 on:
-  push:
-    branches: [main]
-  pull_request:
+  # Nothing runs on an ordinary commit. This is a private repository and macOS
+  # minutes bill at 10x, so the suite runs when you ask for it:
+  #
+  #   gh workflow run ci.yml              # the default branch
+  #   gh workflow run ci.yml --ref <sha>  # a specific commit
+  #
+  # It also runs as the gate at the front of release.yml on every version tag.
+  workflow_dispatch:
 
 permissions:
   contents: read

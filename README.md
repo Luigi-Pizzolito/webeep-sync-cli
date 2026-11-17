@@ -296,11 +296,20 @@ Tag a commit and GitHub builds the packages:
 git tag v0.2 && git push origin v0.2
 ```
 
-`ci.yml` runs `go vet`, `gofmt` and `go test -race` on Linux and macOS for every
-push to `main` and every pull request, plus a `GOOS=windows` and `GOOS=darwin`
-vet so the shipped-but-untested targets keep compiling. `release.yml` runs the
-same checks on a `v*` tag, then builds the Arch package with `makepkg` inside an
-Arch Linux container, then cross builds static binaries for `linux/amd64`,
+Nothing runs on an ordinary commit. `ci.yml` is manual:
+
+```bash
+gh workflow run ci.yml              # the default branch
+gh workflow run ci.yml --ref <sha>  # a specific commit
+```
+
+It runs `go vet`, `gofmt` and `go test -race` on Linux and macOS, plus a
+`GOOS=windows` and `GOOS=darwin` vet so the shipped-but-untested targets keep
+compiling. A private repository bills macOS minutes at 10x, which is why this is
+not wired to every push. `release.yml` runs the same checks on a `v*` tag before
+it builds anything, so a tag is tested even if you never ran `ci.yml` by hand. It
+then builds the Arch package with `makepkg` inside an Arch Linux container, cross
+builds static binaries for `linux/amd64`,
 `linux/arm64`, `darwin/amd64`, `darwin/arm64`, `windows/amd64` and
 `windows/arm64` — tarballs for the Unix targets, zips holding `webeep-sync-cli.exe`
 for Windows — and publishes everything with a `SHA256SUMS` file as a GitHub
