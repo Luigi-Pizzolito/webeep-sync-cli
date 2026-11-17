@@ -111,7 +111,7 @@ access to everything your account sees on WeBeep. `logout` removes it.
 
 | Command | Purpose |
 |---|---|
-| `ui` | Interactive picker: map folders, preview, sync. |
+| `ui [--dir PATH]` | Interactive picker: map folders, preview, sync. |
 | `login` | Obtain and validate a token (`--token`, `--url`, `--cookie`, `--username`). |
 | `logout` | Delete the stored token. |
 | `whoami` | Show the account the token belongs to. |
@@ -150,11 +150,21 @@ c files you edited: keep them  r refresh  j/k move  q quit
   `Tab` fills them in; type anything else you prefer, or empty to use the
   WeBeep course name.
 - `d` — change the root folder (absolute path, e.g. `~/School/PoliMi`).
-- `s` — sync the selected courses. Progress bar per file, `esc` stops the
-  download and keeps what already finished.
+- `s` — sync the selected courses. Progress bar per file. `esc` stops the
+  download: the partial file being written is discarded, everything that already
+  finished stays downloaded and is remembered. Quitting while it runs does the
+  same.
 - `c` — by default files **you** edited stay yours. `c` flips that and lets
   WeBeep replace them; the preview tells you how many files that would touch.
 - `r` — reload the course list from WeBeep.
+
+`ui` also takes `--dir PATH` and `--workers N`. `--dir` applies to that run only
+and is never saved, so you can rehearse the whole thing against an empty scratch
+folder before pointing it at the real one:
+
+```
+webeep-sync-cli ui --dir ~/tmp/webeep-rehearsal
+```
 
 ## Mapping courses to folders
 
@@ -181,11 +191,11 @@ Rules that keep your files safe:
 - Files already in those folders that WeBeep does not own are protected: they
   are never overwritten or deleted.
 
-Useful `sync` flags:
+Useful `sync` flags (`ui` takes `--dir` and `--workers` too):
 
 | Flag | Effect |
 |---|---|
-| `--dir PATH` | Download folder (default `~/WeBeep`, or `download_dir` from config). |
+| `--dir PATH` | Download folder (default `~/WeBeep`, or `download_dir` from config). For `ui` it applies to that run only and is never saved, so `ui --dir ~/tmp/webeep-test` lets you try everything against an empty scratch folder first. |
 | `--dry-run` | Print the plan, change nothing. |
 | `--course TEXT` | Only sync courses whose name contains TEXT (repeatable). |
 | `--all` | Sync every course, even disabled ones. |
@@ -201,6 +211,7 @@ Useful `sync` flags:
 | `~/.config/webeep-sync-cli/config.json` | Root download dir, worker count, module exclusions, and per-course `sync` switch plus folder `path` mapping. |
 | `~/.config/webeep-sync-cli/token.json` | The web service token (0600). |
 | `<download_dir>/.webeep-sync-cli.json` | Manifest: last known remote state (size, `timemodified`) of every synced file, plus `protected` and `missing` marks. |
+| `<download_dir>/**/.webeep-part-*` | The hidden file a download is written to before it is renamed into place. It disappears when the download finishes, fails, or is stopped with `esc`. If a run was killed outright one can survive, and the next `sync` removes it and reports how many. |
 
 Deleting the manifest is safe: on the next run, local files that match the
 remote size and timestamp are adopted without re-downloading, and files that

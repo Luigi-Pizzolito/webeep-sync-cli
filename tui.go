@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,6 +28,11 @@ func cmdUI(args []string) error {
 	if !stdinInteractive() {
 		return fmt.Errorf("the UI needs a terminal: use `webeep-sync-cli sync --dry-run` instead")
 	}
+	fs := flag.NewFlagSet("ui", flag.ExitOnError)
+	dirFlag := fs.String("dir", "", "root folder for this run only, instead of the configured one (handy for testing)")
+	workers := fs.Int("workers", 0, "parallel downloads")
+	fs.Parse(args)
+
 	conf, err := config.Load()
 	if err != nil {
 		return err
@@ -34,8 +40,13 @@ func cmdUI(args []string) error {
 	if _, err := config.LoadToken(); err != nil {
 		return err
 	}
+	opts := defaultSyncOptions()
+	opts.Dir = expandTilde(strings.TrimSpace(*dirFlag))
+	if *workers > 0 {
+		opts.Workers = *workers
+	}
 
-	p := tea.NewProgram(newUIModel(conf), tea.WithAltScreen())
+	p := tea.NewProgram(newUIModel(conf, opts), tea.WithAltScreen())
 	final, err := p.Run()
 	if err != nil {
 		return err
@@ -94,6 +105,7 @@ type tickMsg time.Time
 
 type uiModel struct {
 	conf   *config.Config
+	opts   syncOptions // --dir and --workers for this run
 	target *syncTarget
 	rows   []resolvedCourse
 	warn   []string
@@ -128,16 +140,21 @@ type uiModel struct {
 	notes  []string
 }
 
-func newUIModel(conf *config.Config) *uiModel {
+func newUIModel(conf *config.Config, opts syncOptions) *uiModel {
 	in := textinput.New()
 	in.Prompt = "> "
 	in.Width = 46
-	workers := conf.Workers
+	workers := opts.Workers
+	if workers <= 0 {
+		workers = conf.Workers
+	}
 	if workers <= 0 {
 		workers = 3
 	}
+	opts.Workers = workers
 	return &uiModel{
 		conf:    conf,
+		opts:    opts,
 		workers: workers,
 		mode:    modeLoading,
 		spinner: spinner.New(spinner.WithSpinner(spinner.Line)),
@@ -151,11 +168,11 @@ func (m *uiModel) Init() tea.Cmd {
 
 // loadCmd asks WeBeep who we are and which courses we are enrolled in.
 func (m *uiModel) loadCmd() tea.Cmd {
-	conf := m.conf
+	conf, opts := m.conf, m.opts
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
-		target, err := prepareSync(ctx, conf, defaultSyncOptions())
+		target, err := prepareSync(ctx, conf, opts)
 		return loadedMsg{target: target, err: err}
 	}
 }
@@ -163,6 +180,9 @@ func (m *uiModel) loadCmd() tea.Cmd {
 func (m *uiModel) dir() string {
 	if m.target != nil {
 		return m.target.dir
+	}
+	if m.opts.Dir != "" {
+		return m.opts.Dir
 	}
 	if m.conf.DownloadDir != "" {
 		return expandTilde(m.conf.DownloadDir)
@@ -322,7 +342,7 @@ func (m *uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.target = msg.target
 		m.rebuild()
 		m.mode = modeCourses
-		if m.conf.DownloadDir == "" {
+		if m.conf.DownloadDir == "" && m.opts.Dir == "" {
 			m.openDirEditor()
 		}
 		return m, nil
@@ -382,6 +402,9 @@ func (m *uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func summaryLine(s syncpkg.Stats, err error) string {
 	line := fmt.Sprintf("synced %d new and %d updated files (%s downloaded) | %d gone from WeBeep, %d failed",
 		s.New, s.Updated, fsx.HumanBytes(s.Bytes), s.NotFound, s.Failed)
+	if s.StaleTemps > 0 {
+		line += fmt.Sprintf(" | cleaned %d partial file(s) left by an interrupted run", s.StaleTemps)
+	}
 	if err != nil {
 		line = "stopped early: " + line
 	}
@@ -421,6 +444,12 @@ func (m *uiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.quit()
 		return m, tea.Quit
 	case tea.KeyEsc:
+		if m.mode == modeSync {
+			// esc really means stop downloading. Stay on the sync screen until
+			// the workers have stopped and the summary arrives.
+			m.stopRun()
+			return m, nil
+		}
 		if m.mode != modeCourses {
 			m.mode = modeCourses
 			return m, nil
@@ -639,8 +668,39 @@ func (m *uiModel) move(delta int) {
 }
 
 func (m *uiModel) quit() {
+	m.stopRun()
+	if m.mode == modeSync && m.total > 0 {
+		m.status = fmt.Sprintf("stopped after %d/%d files: what already finished stays downloaded",
+			minInt(m.done, m.total), m.total)
+	}
+	m.waitForWorkers()
+}
+
+// stopRun cancels a download that is running without leaving the UI: whatever
+// already finished stays downloaded.
+func (m *uiModel) stopRun() {
 	if m.cancel != nil {
 		m.cancel()
+		m.cancel = nil
+	}
+}
+
+// waitForWorkers lets the download goroutine finish stopping before the process
+// exits, so a partial file is dropped instead of left in your folders.
+func (m *uiModel) waitForWorkers() {
+	if m.events == nil {
+		return
+	}
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case _, open := <-m.events:
+			if !open {
+				return // the run is over, and so are its temporary files
+			}
+		case <-deadline:
+			return
+		}
 	}
 }
 
@@ -694,9 +754,11 @@ func (m *uiModel) View() string {
 	for _, note := range m.notes {
 		b.WriteString("\n" + uiDim.Render(note))
 	}
-	if m.errMsg != "" {
+	// The sync panel already prints the file it is on, so do not repeat it.
+	switch {
+	case m.errMsg != "":
 		b.WriteString("\n" + uiErr.Render(m.errMsg))
-	} else if m.status != "" {
+	case m.status != "" && m.mode != modeSync:
 		b.WriteString("\n" + uiDim.Render(m.status))
 	}
 	return b.String()
@@ -868,8 +930,7 @@ func (m *uiModel) syncView() string {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("\nsyncing  %d/%d files  %3.0f%%\n", minInt(m.done, m.total), m.total, pct*100))
 	b.WriteString("  " + progressBar(m.done, m.total, width) + "\n")
-	b.WriteString("  " + uiDim.Render(truncate(m.status, m.width-4)) + "\n")
-	b.WriteString(uiDim.Render("  esc stops downloading; everything already finished stays downloaded"))
+	b.WriteString("  " + uiDim.Render(truncate(m.status, m.width-4)))
 	return b.String()
 }
 

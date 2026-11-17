@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/bubbletea"
+
 	"github.com/Luigi-Pizzolito/webeep-sync-cli/internal/config"
 	"github.com/Luigi-Pizzolito/webeep-sync-cli/internal/moodle"
 	syncpkg "github.com/Luigi-Pizzolito/webeep-sync-cli/internal/sync"
@@ -238,5 +240,66 @@ func TestShortCourseName(t *testing.T) {
 		if got := shortCourseName(c.in); got != c.want {
 			t.Errorf("shortCourseName(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+// TestSyncScreenRepeatsNothing: the file being downloaded and the esc hint each
+// appear once, not once per panel.
+func TestSyncScreenRepeatsNothing(t *testing.T) {
+	m := newUIModel(&config.Config{DownloadDir: "/root"}, defaultSyncOptions())
+	m.width, m.height = 100, 30
+	m.target = &syncTarget{user: "Test User", dir: "/root"}
+	m.rows = []resolvedCourse{{CourseSummary: moodle.CourseSummary{ID: 1}, Folder: "Y1S1/Biochip", Sync: true}}
+	m.mode = modeSync
+	m.total, m.done = 458, 20
+	m.cancel = func() {}
+	m.status = "Y1S1/Biochip/Exams/Past Exams.zip (20.0MB so far)"
+
+	view := m.View()
+	if n := strings.Count(view, m.status); n != 1 {
+		t.Errorf("current file appears %d times, want once\n%s", n, view)
+	}
+	if n := strings.Count(view, "esc "); n != 1 {
+		t.Errorf("the esc hint appears %d times, want once\n%s", n, view)
+	}
+}
+
+// TestEscDuringSyncStopsTheDownload: esc is the key the footer promises will
+// stop the download. It must really cancel the run and stay on the sync screen
+// so the summary is shown.
+func TestEscDuringSyncStopsTheDownload(t *testing.T) {
+	m := newUIModel(&config.Config{DownloadDir: "/root"}, defaultSyncOptions())
+	stopped := false
+	m.cancel = func() { stopped = true }
+	m.mode = modeSync
+	m.total, m.done = 505, 12
+	m.events = make(chan any)
+	close(m.events) // pretend the workers have already stopped
+
+	m.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+
+	if !stopped {
+		t.Error("esc did not stop the download")
+	}
+	if m.mode != modeSync {
+		t.Errorf("mode = %v, want the sync screen so the summary appears", m.mode)
+	}
+}
+
+// TestQuitDuringSyncReportsWhatSurvived: quitting mid-run must say what is
+// already on disk, not the name of the file that was half downloaded.
+func TestQuitDuringSyncReportsWhatSurvived(t *testing.T) {
+	m := newUIModel(&config.Config{DownloadDir: "/root"}, defaultSyncOptions())
+	m.cancel = func() {}
+	m.mode = modeSync
+	m.total, m.done = 505, 12
+	m.status = "Y1S1/Biochip/Slides/L13 - Optical Detection.pdf (2.4MB so far)"
+	m.events = make(chan any)
+	close(m.events)
+
+	m.quit()
+
+	if !strings.Contains(m.status, "12/505") {
+		t.Errorf("status = %q, want it to report 12 of 505 files", m.status)
 	}
 }

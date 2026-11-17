@@ -80,13 +80,26 @@ Usage:
   webeep-sync-cli logout                                               forget the saved token
   webeep-sync-cli whoami                                               show the logged-in account
   webeep-sync-cli dir [path|--clear]                                   show or set the folder courses live in
-  webeep-sync-cli courses                                              list enrolled courses
+  webeep-sync-cli courses                                              list enrolled courses and their folders
   webeep-sync-cli course enable|disable <id>                          include or skip one course
   webeep-sync-cli course path <id> "Y1S1/Biochip"                    map it to a local folder
   webeep-sync-cli course rename <id> [name]                           (same as path)
   webeep-sync-cli sync   [flags]                                       download new/changed files
   webeep-sync-cli doctor                                               check endpoints and token
-  webeep-sync-cli version`)
+  webeep-sync-cli version
+
+Flags for ui and sync:
+  --dir PATH        use this root for this run only, nothing saved (handy for testing)
+  --workers N       parallel downloads (default 3)
+
+sync also takes:
+  --dry-run         print what would happen, change nothing
+  --no-overwrite    never replace an existing local file
+  --clobber         also replace files recorded as your own (protected)
+  --all             every enrolled course, even ones you disabled
+  --course TEXT     only courses whose name contains TEXT (repeatable)
+  --exclude-mod M   additionally skip this module type (repeatable)
+  --quiet           print only the final summary`)
 }
 
 // stringList is a repeatable string flag.
@@ -923,6 +936,9 @@ func cmdSync(args []string) error {
 
 	fmt.Printf("synced: %d new, %d updated (%s downloaded) | %d not on server, %d failed\n",
 		stats.New, stats.Updated, fsx.HumanBytes(stats.Bytes), stats.NotFound, stats.Failed)
+	if stats.StaleTemps > 0 {
+		fmt.Printf("cleaned %d partial download(s) left behind by an interrupted run\n", stats.StaleTemps)
+	}
 	if runErr != nil {
 		if errors.Is(runErr, context.Canceled) {
 			return fmt.Errorf("sync interrupted (completed work up to this point was kept)")
