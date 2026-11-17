@@ -54,11 +54,14 @@ jobs:
             --workdir /work/packaging/arch \
             archlinux/archlinux:latest \
             bash -euo pipefail -c '
-              # the base Arch image has no git, so install it before using it
+              # The base Arch image has no git, and it runs as root while makepkg
+              # refuses to build as root. So: install what is needed as root, hand
+              # the checkout to an unprivileged user, build as that user.
               pacman -Syu --noconfirm --needed go git base-devel
-              git config --global --add safe.directory "*"
-              makepkg -sf --noconfirm --needed
-              chmod -R a+rwX .
+              useradd -m builduser
+              chown -R builduser:builduser /work
+              su builduser -c "cd /work/packaging/arch && makepkg --noconfirm"
+              chmod -R a+rwX /work
             '
 
       - name: Checksums
