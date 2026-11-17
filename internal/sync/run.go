@@ -23,6 +23,9 @@ type Stats struct {
 	NotFound int
 	Failed   int
 	Bytes    int64
+	// StaleTemps counts partial downloads this tool left behind in an earlier
+	// run that was killed mid-file. They are removed before this run starts.
+	StaleTemps int
 }
 
 // Callbacks report progress while running; OnDone and OnFail are called under
@@ -47,6 +50,9 @@ func Run(ctx context.Context, c *moodle.Client, actions []Action, root string, m
 		}
 	}
 	var stats Stats
+	// A run that was killed outright can leave a partial download behind in
+	// your folders (and into Syncthing). Pick those up before downloading.
+	stats.StaleTemps, _ = moodle.CleanStaleTemps(root)
 	if len(pending) == 0 {
 		return stats, nil
 	}

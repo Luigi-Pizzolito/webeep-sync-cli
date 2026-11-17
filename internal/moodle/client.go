@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
@@ -433,6 +434,54 @@ func (c *Client) DownloadFile(ctx context.Context, fileURL, dst string, onProgre
 	return 0, lastErr
 }
 
+// TempFilePattern is the name of the hidden file a download is written to
+// before it is renamed into place. Every partial file this tool creates carries
+// this prefix, which is what makes CleanStaleTemps safe: it only ever touches
+// files this tool itself wrote.
+const TempFilePattern = ".webeep-part-*"
+
+// StaleTempAge is how long a partial download may sit untouched before
+// CleanStaleTemps treats it as abandoned instead of in flight.
+const StaleTempAge = 30 * time.Minute
+
+// CleanStaleTemps removes partial downloads an earlier run left behind, which
+// happens when the process is killed outright while writing a file. It walks
+// root, removes only files named like our own temporaries, and leaves any
+// written recently alone so a download running in another process is untouched.
+func CleanStaleTemps(root string) (int, error) {
+	return cleanStaleTemps(root, StaleTempAge, time.Now())
+}
+
+func cleanStaleTemps(root string, olderThan time.Duration, now time.Time) (int, error) {
+	var removed int
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // an unreadable corner is not worth failing the sync over
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if !strings.HasPrefix(d.Name(), strings.TrimSuffix(TempFilePattern, "*")) {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		if now.Sub(info.ModTime()) < olderThan {
+			return nil
+		}
+		if os.Remove(path) == nil {
+			removed++
+		}
+		return nil
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	return removed, err
+}
+
 // writeToTemp copies the body into a hidden temporary file in dst's directory
 // and renames it into place. When onProgress is non-nil it receives the
 // cumulative bytes written, roughly once per chunk.
@@ -441,7 +490,7 @@ func writeToTemp(body io.Reader, dst string, onProgress func(int64)) (int64, err
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return 0, err
 	}
-	tmp, err := os.CreateTemp(dir, ".webeep-part-*")
+	tmp, err := os.CreateTemp(dir, TempFilePattern)
 	if err != nil {
 		return 0, err
 	}
