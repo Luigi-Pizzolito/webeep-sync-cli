@@ -158,5 +158,5 @@ jobs:
           else
             gh release create --repo "$repo" "$tag" "${files[@]}" \
               --verify-tag --title "$tag" \
-              --notes 'Builds of webeep-sync-cli. On Arch, install the package with sudo pacman -U ./webeep-sync-cli-<version>-x86_64.pkg.tar.zst on an up to date install. The Linux and macOS tarballs and the Windows zips hold plain static binaries with the license and this README; the macOS builds are not code signed, so on first run clear the quarantine attribute with xattr -d com.apple.quarantine. Windows builds compile and vet clean but are not run-tested yet.'
+              --notes 'Builds of webeep-sync-cli. On Arch, install the package with sudo pacman -U ./webeep-sync-cli-<version>-x86_64.pkg.tar.zst on an up to date install. The Linux and macOS tarballs and the Windows zips hold plain static binaries with the license and this README; the macOS builds are not code signed, so on first run clear the quarantine attribute with xattr -d com.apple.quarantine. The Windows builds have only ever been run under Wine, and the terminal UI has not been checked on a real Windows console.'
           fi

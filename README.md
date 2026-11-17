@@ -36,9 +36,10 @@ finished.
 ## Requirements
 
 Go 1.24.2 or newer to build (the terminal UI dependencies need it). Linux and
-macOS are exercised by the local test suite and by CI. Windows builds compile
-and vet clean in CI and ship in every release, but no one has run one end to
-end yet, so treat them as untested.
+macOS are exercised by the local test suite and by CI. Windows builds compile and
+vet clean in CI and ship in every release; the commands run under Wine, but the
+terminal UI has not been checked on a real Windows console yet, so treat Windows
+as untested.
 
 ## Quickstart
 
@@ -54,8 +55,9 @@ go build -o webeep-sync-cli .
 
 On the first run the tool asks where your course folders should live; the
 answer is saved to config. Afterwards it is used by every `sync`, including
-cron jobs. Non-interactive runs fall back to `~/WeBeep` until you set it with
-`dir`.
+cron jobs. Non-interactive runs fall back to a `WeBeep` folder in your home
+directory until you set it with `dir`. Paths you type may start with `~` or
+`~\`; the tool expands them itself.
 
 Plain command line instead of the UI:
 
