@@ -1,11 +1,14 @@
 # webeep-sync-cli
 
-A Go command-line tool that keeps all the files of your WeBeep
-(webeep.polimi.it) courses in a local folder. It is a rework of
+A Go tool that keeps all the files of your WeBeep (webeep.polimi.it) courses
+in local course folders. It is a rework of
 [toto04/webeep-sync](https://github.com/toto04/webeep-sync) (Electron app,
-mostly unmaintained) as a single static binary with rsync-style behavior:
-files are added and updated from WeBeep, and your own local files are never
-touched.
+mostly unmaintained) as a single static binary with rsync-style behavior: files
+are added and updated from WeBeep, and your own local files are never touched.
+
+An interactive terminal UI maps each WeBeep course to a folder on your disk —
+including semester folders such as `Y1S1/Biochip` — previews what a sync would
+do, and only then downloads.
 
 ## Why a rework
 
@@ -45,9 +48,22 @@ go build -o webeep-sync-cli .
 
 ./webeep-sync-cli doctor      # checks that WeBeep and its API are reachable
 ./webeep-sync-cli login       # obtain a web service token (see Login below)
-./webeep-sync-cli courses     # list your enrolled courses and their folders
-./webeep-sync-cli sync --dry-run
-./webeep-sync-cli sync        # downloads into ~/WeBeep
+./webeep-sync-cli ui          # pick folders per course, preview, sync
+```
+
+On the first run the tool asks where your course folders should live; the
+answer is saved to config. Afterwards it is used by every `sync`, including
+cron jobs. Non-interactive runs fall back to `~/WeBeep` until you set it with
+`dir`.
+
+Plain command line instead of the UI:
+
+```bash
+./webeep-sync-cli dir ~/School/PoliMi
+./webeep-sync-cli courses                              # ids and folder for each course
+./webeep-sync-cli course path 18804 "Y1S1/Biochip"     # map a course to a folder
+./webeep-sync-cli sync --dry-run                       # nothing is written
+./webeep-sync-cli sync
 ```
 
 `doctor` output on a working setup:
@@ -95,14 +111,74 @@ access to everything your account sees on WeBeep. `logout` removes it.
 
 | Command | Purpose |
 |---|---|
+| `ui` | Interactive picker: map folders, preview, sync. |
 | `login` | Obtain and validate a token (`--token`, `--url`, `--cookie`, `--username`). |
 | `logout` | Delete the stored token. |
 | `whoami` | Show the account the token belongs to. |
+| `dir [PATH \| --clear]` | Show or set the folder all course folders live in. |
 | `courses` | List enrolled courses, ids, folders and sync state. |
 | `course enable/disable <id>` | Include or exclude one course from syncing. |
-| `course rename <id> <name>` | Choose the download folder for a course. |
+| `course path <id> "SEM/Course"` | Map a course to a local folder. |
+| `course path <id> ""` | Remove the mapping (use the WeBeep course name). |
 | `sync` | Download new and changed files. |
 | `doctor` | Check WeBeep reachability, the REST API and the stored token. |
+
+Use the numeric id from `courses` (`18804`) or the id part of the WeBeep full
+name. Quote the folder: `course path 18804 "Y1S1/Biochip"`.
+
+## The UI
+
+```
+WeBeep Sync  map each WeBeep course to a folder, and sync without touching your own files
+account LUIGI …  folder /home/luigi/School/PoliMi  syncing 9/12 courses
+
+  LOCAL FOLDER                    WE BEEP COURSE
+▸ [x] Y1S1/Biochip                054085 - BIOCHIP (CARMINATI MARCO) [2025-26]
+  [x] Y1S1/RF Circuit Design      095274 - RF CIRCUIT DESIGN (LEVANTINO SALVATORE) [2025-26]
+  [ ] SOUND ANALYSIS …            052820 - SOUND ANALYSIS … [sezione A] [2025-26]
+
+space sync this course  m map its folder  d change root folder  p preview  s sync
+c files you edited: keep them  r refresh  j/k move  q quit
+```
+
+- `space` — include or exclude this course from syncing (saved at once).
+- `m` — map it to a folder. Existing folders under your root are listed and
+  `Tab` fills them in; type anything else you prefer, or empty to use the
+  WeBeep course name.
+- `d` — change the root folder (absolute path, e.g. `~/School/PoliMi`).
+- `p` — preview: what would be downloaded, how many files are already up to
+  date, and which of your edited files WeBeep has a newer version of. Nothing
+  is written.
+- `s` — sync. Progress bar per file, `esc` stops the download and keeps what
+  already finished.
+- `c` — by default files **you** edited stay yours. `c` flips that and lets
+  WeBeep replace them; the preview tells you how many files that would touch.
+- `r` — reload the course list from WeBeep.
+
+## Mapping courses to folders
+
+Mappings are always relative to the root folder set with `dir` (or the first-run
+question), and can nest, so a semester layout works:
+
+```
+PoliMi/                  <- the root
+├── Y1S1/
+│   ├── Biochip/                       <- mapped from BIOCHIP [2025-26]
+│   ├── RF Circuit Design/
+│   └── Signal Recovery/
+└── Y1S2/
+    └── Analog Circuit Design/
+```
+
+Rules that keep your files safe:
+
+- Absolute paths and `..` are refused: a mapping can never escape the root.
+- Two courses can never share a folder — if you try, the tool warns you and
+  gives the second one a different name, because sharing would make their file
+  sets overwrite each other.
+- Inside each course folder the layout mirrors WeBeep's sections and modules.
+- Files already in those folders that WeBeep does not own are protected: they
+  are never overwritten or deleted.
 
 Useful `sync` flags:
 
@@ -121,7 +197,7 @@ Useful `sync` flags:
 
 | File | Contents |
 |---|---|
-| `~/.config/webeep-sync-cli/config.json` | Download dir, worker count, module exclusions, per-course `sync` and folder `name` overrides. |
+| `~/.config/webeep-sync-cli/config.json` | Root download dir, worker count, module exclusions, and per-course `sync` switch plus folder `path` mapping. |
 | `~/.config/webeep-sync-cli/token.json` | The web service token (0600). |
 | `<download_dir>/.webeep-sync-cli.json` | Manifest: last known remote state (size, `timemodified`) of every synced file, plus `protected` and `missing` marks. |
 
