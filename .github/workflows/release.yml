@@ -1,0 +1,146 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: vet and format
+        run: |
+          go vet ./...
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "not gofmt clean:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: test
+        run: go test -race ./...
+
+  arch-package:
+    name: Arch package
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build the package with makepkg inside Arch Linux
+        run: |
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE:/work" \
+            --workdir /work/packaging/arch \
+            archlinux/archlinux:latest \
+            bash -euo pipefail -c '
+              git config --global --add safe.directory "*"
+              pacman -Syu --noconfirm --needed go git base-devel
+              makepkg -sf --noconfirm --needed
+              chmod -R a+rwX .
+            '
+
+      - name: Checksums
+        run: |
+          cd packaging/arch
+          sha256sum ./*.pkg.tar.zst
+          ls -lh ./*.pkg.tar.zst
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch-package
+          path: packaging/arch/*.pkg.tar.zst
+          if-no-files-found: error
+
+  binaries:
+    name: binary (${{ matrix.goos }}-${{ matrix.goarch }})
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [linux]
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          name="webeep-sync-cli-${{ matrix.goos }}-${{ matrix.goarch }}"
+          mkdir -p "dist/$name"
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+            go build -trimpath -buildvcs=false \
+              -ldflags "-s -w -X main.version=$GITHUB_REF_NAME" \
+              -o "dist/$name/webeep-sync-cli" .
+          cp LICENSE README.md "dist/$name/"
+          "dist/$name/webeep-sync-cli" version || true
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: [test, arch-package, binaries]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: arch-package
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: binary-linux-amd64
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: binary-linux-arm64
+          path: dist
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          cd dist
+          sha256sum ./* > SHA256SUMS
+          cat SHA256SUMS
+          files=(*)
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload --clobber "$tag" "${files[@]}"
+          else
+            gh release create "$tag" "${files[@]}" \
+              --verify-tag --title "$tag" \
+              --notes 'Builds of webeep-sync-cli. On Arch, install the package with sudo pacman -U ./webeep-sync-cli-<version>-x86_64.pkg.tar.zst on an up to date install; the tarballs are plain static binaries for Linux.'
+          fi
