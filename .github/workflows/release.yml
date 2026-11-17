@@ -143,6 +143,14 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
+          NOTES: |
+            Builds of webeep-sync-cli for Linux, macOS and Windows (amd64 and arm64), plus an Arch Linux package.
+
+            Arch: `sudo pacman -U ./webeep-sync-cli-<version>-1-x86_64.pkg.tar.zst` on an up to date install.
+
+            Linux and macOS tarballs, Windows zips holding `webeep-sync-cli.exe`: every archive is a plain static binary beside `LICENSE` and `README.md`. The macOS builds are not code signed or notarized, so clear the quarantine attribute before the first run: `xattr -d com.apple.quarantine webeep-sync-cli`. The Windows builds have only been run under Wine so far, and the terminal UI has not been checked on a real Windows console.
+
+            `sha256sum -c SHA256SUMS` checks every asset in this release.
         run: |
           set -euo pipefail
           tag="$GITHUB_REF_NAME"
@@ -155,8 +163,10 @@ jobs:
           # context to work out which repository the release belongs to.
           if gh release view --repo "$repo" "$tag" >/dev/null 2>&1; then
             gh release upload --clobber --repo "$repo" "$tag" "${files[@]}"
+            # Deleting and re-pushing a tag leaves its release as a draft, so
+            # republish it and refresh the notes whenever it already exists.
+            gh release edit --repo "$repo" "$tag" --draft=false --notes "$NOTES"
           else
             gh release create --repo "$repo" "$tag" "${files[@]}" \
-              --verify-tag --title "$tag" \
-              --notes 'Builds of webeep-sync-cli. On Arch, install the package with sudo pacman -U ./webeep-sync-cli-<version>-x86_64.pkg.tar.zst on an up to date install. The Linux and macOS tarballs and the Windows zips hold plain static binaries with the license and this README; the macOS builds are not code signed, so on first run clear the quarantine attribute with xattr -d com.apple.quarantine. The Windows builds have only ever been run under Wine, and the terminal UI has not been checked on a real Windows console.'
+              --verify-tag --title "$tag" --notes "$NOTES"
           fi
