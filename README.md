@@ -35,9 +35,9 @@ finished.
 
 ## Requirements
 
-Go 1.23 or newer to build. Linux and macOS are exercised by the local test
-suite; Windows builds are expected to work but are untested until end-to-end
-verification is done.
+Go 1.24.2 or newer to build (the terminal UI dependencies need it). Linux and
+macOS are exercised by the local test suite and by CI; Windows builds are
+expected to work but are untested until end-to-end verification is done.
 
 ## Quickstart
 
@@ -65,6 +65,43 @@ Plain command line instead of the UI:
 ./webeep-sync-cli sync --dry-run                       # nothing is written
 ./webeep-sync-cli sync
 ```
+
+<details>
+<summary>Arch Linux: install it as a package</summary>
+
+The repository ships a `PKGBUILD` in `packaging/arch`. Clone the repo and build
+the package from that checkout:
+
+```bash
+git clone https://github.com/Luigi-Pizzolito/webeep-sync-cli
+cd webeep-sync-cli/packaging/arch
+makepkg -si --needed          # builds, runs the test suite, installs with pacman
+```
+
+`makepkg` packages the HEAD commit of your clone, so nothing is fetched from
+GitHub and the private repository needs no credentials. Building needs `go` and
+`base-devel`, which `-s` installs if they are missing.
+
+What lands on disk:
+
+| Path | What it is |
+|---|---|
+| `/usr/bin/webeep-sync-cli` | the command, so `webeep-sync-cli ui` works from anywhere |
+| `/usr/share/licenses/webeep-sync-cli/LICENSE` | the MIT license |
+| `/usr/share/doc/webeep-sync-cli/README.md` | this file |
+
+The package version follows the newest tag in your clone: a clone of `v0.1`
+produces `webeep-sync-cli-0.1-1-x86_64.pkg.tar.zst`, and the binary reports
+`webeep-sync-cli v0.1`. Build without installing with `makepkg -sf --needed`, then
+install with `sudo pacman -U ./webeep-sync-cli-0.1-1-x86_64.pkg.tar.zst`. Clear
+the build directories with `makepkg -C` or `rm -rf src pkg`.
+
+A tagged release also carries a prebuilt Arch package and Linux tarballs, so you
+can download `webeep-sync-cli-<version>-1-x86_64.pkg.tar.zst` from the release
+and install it with `sudo pacman -U` instead of building.
+
+</details>
+
 
 `doctor` output on a working setup:
 
@@ -240,6 +277,28 @@ go test -race ./...   # unit and httptest integration tests, no real credentials
 go vet ./...
 gofmt -l .            # must print nothing
 ```
+
+The test suite covers token parsing from all three login formats, the file
+layout builder (module exclusions, "Materiali" flattening, single-file
+resources, duplicate names), every sync decision from the table above,
+atomic downloads, 404 caching, retries, mtime handling and interrupt
+cleanup. `doctor` is the one command that talks to WeBeep without
+credentials.
+
+## Releases and CI
+
+Tag a commit and GitHub builds the packages:
+
+```bash
+git tag v0.2 && git push origin v0.2
+```
+
+`ci.yml` runs `go vet`, `gofmt` and `go test -race` on Linux and macOS for every
+push to `main` and every pull request. `release.yml` runs the same checks on a
+`v*` tag, then builds the Arch package with `makepkg` inside an Arch Linux
+container, builds static `linux/amd64` and `linux/arm64` binaries, and publishes
+everything with a `SHA256SUMS` file as a GitHub Release named after the tag. The
+version stamped into the binary is the tag name.
 
 The test suite covers token parsing from all three login formats, the file
 layout builder (module exclusions, "Materiali" flattening, single-file
