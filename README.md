@@ -32,8 +32,9 @@ finished.
 
 ## Requirements
 
-Go 1.23 or newer to build. Linux, macOS and Windows are supported (CI builds
-all three).
+Go 1.23 or newer to build. Linux and macOS are exercised by the local test
+suite; Windows builds are expected to work but are untested until end-to-end
+verification is done.
 
 ## Quickstart
 
