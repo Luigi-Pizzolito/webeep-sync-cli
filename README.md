@@ -217,6 +217,11 @@ Deleting the manifest is safe: on the next run, local files that match the
 remote size and timestamp are adopted without re-downloading, and files that
 don't match are protected rather than overwritten.
 
+If the download folder is a Syncthing share, put `.webeep-part-*` in its
+`.stignore` so a half written download is never shipped to your other machines.
+Ignore patterns there are relative to the share root, which is what the tool's
+download folder is set to.
+
 ## Run it periodically
 
 With cron (check `doctor` output first; the token stays valid until WeBeep
