@@ -33,3 +33,11 @@ jobs:
 
       - name: test
         run: go test -race ./...
+
+      # The release ships Windows and macOS binaries, but only Linux and macOS
+      # run the suite, so keep the other targets compiling.
+      - name: cross-compile check
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          GOOS=windows GOARCH=amd64 go vet ./...
+          GOOS=darwin GOARCH=arm64 go vet ./...
