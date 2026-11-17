@@ -55,6 +55,38 @@ func TestParseTokenRaw(t *testing.T) {
 	}
 }
 
+// WeBeep's real blob shape: uasdk:::token:::privatetoken. The uasdk is an md5
+// hex string and looks exactly like a token; the wrong pick made login fail.
+func TestParseTokenWeBeepThreeFieldBlob(t *testing.T) {
+	uasdk := "0123456789abcdef0123456789abcdef"
+	private := strings.Repeat("p", 64)
+	b := base64.StdEncoding.EncodeToString([]byte(uasdk + ":::" + fakeToken + ":::" + private))
+	got, err := ParseToken("moodlemobile://token=" + b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != fakeToken {
+		t.Fatalf("picked the wrong field: got %q want %q", got, fakeToken)
+	}
+}
+
+func TestParseTokenTwoFieldBlobVariants(t *testing.T) {
+	private := strings.Repeat("q", 64)
+	for _, shape := range []string{
+		fakeToken + ":::" + private,
+		fakeToken + ":::" + private + ":::",
+	} {
+		b := base64.StdEncoding.EncodeToString([]byte(shape))
+		got, err := ParseToken(b)
+		if err != nil {
+			t.Fatalf("shape %q: %v", shape, err)
+		}
+		if got != fakeToken {
+			t.Fatalf("shape %q: got %q want %q", shape, got, fakeToken)
+		}
+	}
+}
+
 func TestParseTokenGarbage(t *testing.T) {
 	for _, in := range []string{"", "   ", "not a token", "https://webeep.polimi.it/login/index.php"} {
 		if _, err := ParseToken(in); err == nil {
