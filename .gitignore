@@ -1,0 +1,4 @@
+/webeep-sync-cli
+*.exe
+/dist/
+*.log
