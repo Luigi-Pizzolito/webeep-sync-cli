@@ -850,6 +850,19 @@ func cmdSync(args []string) error {
 				fmt.Printf("  would download (%s): %s  %s\n", a.Kind.Label(), a.Entry.RelPath, fsx.HumanBytes(a.Entry.Size))
 			}
 		}
+		// The point of a dry run is to show what is *not* touched.
+		for _, a := range actions {
+			switch a.Kind {
+			case syncpkg.ActionAdopt:
+				fmt.Printf("  adopted (yours already matches WeBeep): %s\n", a.Entry.RelPath)
+			case syncpkg.ActionProtected:
+				fmt.Printf("  protected (your own file, WeBeep will not touch it): %s\n", a.Entry.RelPath)
+			case syncpkg.ActionProtectedChanged:
+				fmt.Printf("  protected (your own file, WeBeep has a newer version): %s\n", a.Entry.RelPath)
+			case syncpkg.ActionLocalIsDir:
+				fmt.Printf("  skipped (you have a folder named like this file): %s\n", a.Entry.RelPath)
+			}
+		}
 		fmt.Println("dry run: nothing was changed")
 		return nil
 	}
