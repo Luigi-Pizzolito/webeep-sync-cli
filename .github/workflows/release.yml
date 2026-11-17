@@ -54,8 +54,9 @@ jobs:
             --workdir /work/packaging/arch \
             archlinux/archlinux:latest \
             bash -euo pipefail -c '
-              git config --global --add safe.directory "*"
+              # the base Arch image has no git, so install it before using it
               pacman -Syu --noconfirm --needed go git base-devel
+              git config --global --add safe.directory "*"
               makepkg -sf --noconfirm --needed
               chmod -R a+rwX .
             '
