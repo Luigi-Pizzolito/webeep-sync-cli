@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Packages webeep-sync-cli for Arch Linux from the checkout this file lives in.
 # The repository is private, so makepkg never fetches anything itself: it takes
@@ -13,7 +13,7 @@ pkgrel=1
 pkgdesc='Keep WeBeep (webeep.polimi.it) course files synced locally, rsync style'
 arch=('x86_64' 'aarch64')
 url='https://github.com/Luigi-Pizzolito/webeep-sync-cli'
-license=('MIT')
+license=('GPL3')
 makedepends=('go' 'git')
 source=()
 noextract=()
