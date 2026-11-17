@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -169,8 +170,9 @@ func (m *uiModel) dir() string {
 	return expandTilde(filepath.Join("~", "WeBeep"))
 }
 
-// rebuild re-resolves folders and the selection after a mapping or switch
-// changed. No network needed: the course list is already in m.target.
+// rebuild re-resolves folders after a mapping or switch changed. No network
+// needed: the course list is already in m.target. The cached plan stays valid,
+// because file counts per course do not depend on which ones you select.
 func (m *uiModel) rebuild() {
 	rows, warnings := resolveCourses(m.target.remote, m.conf)
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Folder < rows[j].Folder })
@@ -178,24 +180,39 @@ func (m *uiModel) rebuild() {
 	m.target.rows = rows
 	m.target.warnings = warnings
 	m.target.chosen, m.target.skipped = selectCourses(rows, defaultSyncOptions())
-	m.invalidatePlan()
 }
 
 func (m *uiModel) invalidatePlan() {
 	m.planCache, m.manifestCache, m.cacheKey = nil, nil, ""
 }
 
-// planKey ties a cached plan to the exact set of folders it was built for.
+// planKey ties a cached plan to the folder layout it was built for. Selecting
+// courses in and out does not change it, so counts survive toggling.
 func (m *uiModel) planKey() string {
 	parts := make([]string, 0, len(m.rows))
 	for _, r := range m.rows {
-		parts = append(parts, fmt.Sprintf("%d=%s:%v", r.ID, r.Folder, r.Sync))
+		parts = append(parts, fmt.Sprintf("%d=%s", r.ID, r.Folder))
 	}
 	return m.dir() + "|" + strings.Join(parts, ",")
 }
 
-// fetchPlan lists what WeBeep has and how it compares to the local folder.
-// The result is cached, so pressing s after p does not ask WeBeep again.
+// selectedPlan returns the cached actions for the courses you have selected.
+func (m *uiModel) selectedPlan() []syncpkg.Action {
+	enabled := make(map[int64]bool, len(m.rows))
+	for _, r := range m.rows {
+		enabled[r.ID] = r.Sync
+	}
+	out := make([]syncpkg.Action, 0, len(m.planCache))
+	for _, a := range m.planCache {
+		if enabled[a.Entry.CourseID] {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// fetchPlan lists what WeBeep has for every course, selected or not: seeing how
+// many files an old instance holds is exactly how you decide whether to sync it.
 func (m *uiModel) fetchPlan(thenRun bool) tea.Cmd {
 	if m.cacheKey != "" && m.cacheKey == m.planKey() {
 		if thenRun {
@@ -206,7 +223,7 @@ func (m *uiModel) fetchPlan(thenRun bool) tea.Cmd {
 	}
 	target := m.target
 	rows := append([]resolvedCourse(nil), m.rows...)
-	target.chosen, target.skipped = selectCourses(rows, defaultSyncOptions())
+	target.chosen, target.skipped = selectCourses(rows, syncOptions{All: true})
 	key := m.planKey()
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -216,10 +233,12 @@ func (m *uiModel) fetchPlan(thenRun bool) tea.Cmd {
 	}
 }
 
-// startRun downloads the cached plan, streaming progress through m.events.
+// startRun downloads the cached plan for the selected courses, streaming
+// progress through m.events.
 func (m *uiModel) startRun() tea.Cmd {
-	actions, manifest := m.planCache, m.manifestCache
-	if actions == nil || manifest == nil {
+	actions, manifest := m.selectedPlan(), m.manifestCache
+	if manifest == nil || len(actions) == 0 {
+		m.status = "nothing selected: press space next to a course, then s"
 		return nil
 	}
 	if m.clobber {
@@ -700,10 +719,15 @@ func (m *uiModel) coursesView() string {
 			dirWidth = n
 		}
 	}
-	dirWidth = minInt(dirWidth, maxInt(m.width-44, 12))
+	dirWidth = minInt(dirWidth, maxInt(m.width-56, 12))
+	counts := m.newFileCounts()
 
 	var b strings.Builder
-	b.WriteString("\n  " + uiDim.Render(fmt.Sprintf("%-*s  %s", dirWidth, "LOCAL FOLDER", "WE BEEP COURSE")))
+	header := fmt.Sprintf("%-7s  %-*s  %s", "ID", dirWidth, "LOCAL FOLDER", "WE BEEP COURSE")
+	if counts != nil {
+		header += "  NEW"
+	}
+	b.WriteString("\n  " + uiDim.Render(header))
 	b.WriteString("\n")
 	for i := m.scroll; i < len(m.rows) && i < m.scroll+visible; i++ {
 		r := m.rows[i]
@@ -719,13 +743,64 @@ func (m *uiModel) coursesView() string {
 		if i == m.cursor {
 			folder = uiCursor.Render(folder)
 		}
-		name := truncate(r.DisplayName, maxInt(m.width-dirWidth-14, 8))
-		b.WriteString(fmt.Sprintf("%s%s %-*s  %s\n", cursor, box, dirWidth, folder, uiDim.Render(name)))
+		name := shortCourseName(r.DisplayName)
+		if name == "" || name == r.Folder {
+			name = "-"
+		}
+		tail := ""
+		if counts != nil {
+			if n := counts[r.ID]; n > 0 {
+				tail = fmt.Sprintf("  %s", uiChecked.Render(fmt.Sprintf("%d", n)))
+			} else {
+				tail = uiDim.Render("  0")
+			}
+		}
+		b.WriteString(fmt.Sprintf("%s%s %-7s  %-*s  %s%s\n", cursor, box, strconv.FormatInt(r.ID, 10),
+			dirWidth, folder, uiDim.Render(truncate(name, maxInt(m.width-dirWidth-32, 8))), tail))
 	}
 	for _, w := range m.warn {
 		b.WriteString(uiWarn.Render("note: "+w) + "\n")
 	}
+	if counts == nil {
+		b.WriteString(uiDim.Render("press p to see how many files each course would download"))
+	}
 	return b.String()
+}
+
+// newFileCounts counts, per course, how many files the cached plan would
+// download. It is what makes "is this old instance worth syncing?" answerable.
+func (m *uiModel) newFileCounts() map[int64]int {
+	if len(m.planCache) == 0 {
+		return nil
+	}
+	counts := make(map[int64]int)
+	for _, a := range m.planCache {
+		if a.Kind.Downloads() {
+			counts[a.Entry.CourseID]++
+		}
+	}
+	return counts
+}
+
+// shortCourseName drops the "095274 - " id prefix for display only.
+func shortCourseName(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.Index(s, " - "); i > 0 && isAllDigits(s[:i]) {
+		s = strings.TrimSpace(s[i+3:])
+	}
+	return s
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (m *uiModel) mappingView() string {
@@ -753,16 +828,21 @@ func (m *uiModel) dirView() string {
 }
 
 func (m *uiModel) planView() string {
-	counts := countActions(m.planCache)
+	selected := m.selectedPlan()
+	counts := countActions(selected)
+	unselected := len(m.planCache) - len(selected)
 	toDownload := counts[syncpkg.ActionNew] + counts[syncpkg.ActionUpdate]
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("\nplan for %s\n", m.dir()))
 	b.WriteString(uiDim.Render(fmt.Sprintf("%d to download, %d already up to date, %d adopted, %d protected, %d no longer on WeBeep\n",
 		toDownload, counts[syncpkg.ActionUnchanged], counts[syncpkg.ActionAdopt],
 		counts[syncpkg.ActionProtected]+counts[syncpkg.ActionProtectedChanged], counts[syncpkg.ActionSkipMissing])))
+	if unselected > 0 {
+		b.WriteString(uiDim.Render(fmt.Sprintf("%d file(s) belong to courses you deselected: they stay where they are\n", unselected)))
+	}
 
-	shown, maxShown := 0, maxInt(m.height-22, 3)
-	for _, a := range m.planCache {
+	shown, maxShown := 0, maxInt(m.height-24, 3)
+	for _, a := range selected {
 		if !a.Kind.Downloads() {
 			continue
 		}

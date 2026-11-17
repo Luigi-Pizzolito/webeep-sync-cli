@@ -132,25 +132,26 @@ name. Quote the folder: `course path 18804 "Y1S1/Biochip"`.
 WeBeep Sync  map each WeBeep course to a folder, and sync without touching your own files
 account LUIGI …  folder /home/luigi/School/PoliMi  syncing 9/12 courses
 
-  LOCAL FOLDER                    WE BEEP COURSE
-▸ [x] Y1S1/Biochip                054085 - BIOCHIP (CARMINATI MARCO) [2025-26]
-  [x] Y1S1/RF Circuit Design      095274 - RF CIRCUIT DESIGN (LEVANTINO SALVATORE) [2025-26]
-  [ ] SOUND ANALYSIS …            052820 - SOUND ANALYSIS … [sezione A] [2025-26]
+  ID      LOCAL FOLDER                  WE BEEP COURSE                       NEW
+▸ [x] 18804    Y1S1/Biochip                BIOCHIP (CARMINATI MARCO) [202…    13
+  [x] 18578    Y1S1/RF Circuit Design      RF CIRCUIT DESIGN (LEVANTINO …     16
+  [ ] 16110    RF CIRCUIT DESIGN           RF CIRCUIT DESIGN (LEVANTINO …     44
 
 space sync this course  m map its folder  d change root folder  p preview  s sync
 c files you edited: keep them  r refresh  j/k move  q quit
 ```
 
 - `space` — include or exclude this course from syncing (saved at once).
+- `p` — preview, and it also fills the `NEW` column: how many files each course
+  would download, including courses you deselected. That is how you tell whether
+  an old instance of a course is worth syncing at all: `0` means WeBeep has
+  nothing new for it.
 - `m` — map it to a folder. Existing folders under your root are listed and
   `Tab` fills them in; type anything else you prefer, or empty to use the
   WeBeep course name.
 - `d` — change the root folder (absolute path, e.g. `~/School/PoliMi`).
-- `p` — preview: what would be downloaded, how many files are already up to
-  date, and which of your edited files WeBeep has a newer version of. Nothing
-  is written.
-- `s` — sync. Progress bar per file, `esc` stops the download and keeps what
-  already finished.
+- `s` — sync the selected courses. Progress bar per file, `esc` stops the
+  download and keeps what already finished.
 - `c` — by default files **you** edited stay yours. `c` flips that and lets
   WeBeep replace them; the preview tells you how many files that would touch.
 - `r` — reload the course list from WeBeep.

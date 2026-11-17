@@ -8,6 +8,7 @@ import (
 
 	"github.com/Luigi-Pizzolito/webeep-sync-cli/internal/config"
 	"github.com/Luigi-Pizzolito/webeep-sync-cli/internal/moodle"
+	syncpkg "github.com/Luigi-Pizzolito/webeep-sync-cli/internal/sync"
 )
 
 func strptr(s string) *string { return &s }
@@ -167,5 +168,75 @@ func TestLocalCourseDirsSuggestsSemesterFolders(t *testing.T) {
 	want := []string{"Y1S1", "Y1S1/Biochip", "Y1S1/RF Circuit Design", "Y1S2", "Y1S2/Analog Circuit Design"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("suggestions = %v, want %v", got, want)
+	}
+}
+
+// TestPlanKeyIgnoresSelection is what makes the UI usable: after pressing p you
+// can switch courses on and off while their file counts stay on screen, but a
+// changed mapping must drop the cached plan.
+func TestPlanKeyIgnoresSelectionButNotMappings(t *testing.T) {
+	m := &uiModel{
+		conf: &config.Config{DownloadDir: "/root"},
+		rows: []resolvedCourse{
+			{CourseSummary: moodle.CourseSummary{ID: 1}, Folder: "Y1S1/Biochip", Sync: true},
+			{CourseSummary: moodle.CourseSummary{ID: 2}, Folder: "RF CIRCUIT DESIGN", Sync: true},
+		},
+	}
+	before := m.planKey()
+
+	m.rows[0].Sync = false
+	if m.planKey() != before {
+		t.Error("selecting courses in and out must not invalidate the cached plan")
+	}
+
+	m.rows[0].Folder = "Y1S1/Biochip 2026"
+	if m.planKey() == before {
+		t.Error("a changed folder mapping must invalidate the cached plan")
+	}
+
+	m.conf.DownloadDir = "/other/root"
+	m.rows[0].Folder = "Y1S1/Biochip"
+	if got := m.planKey(); !strings.HasPrefix(got, "/other/root|") {
+		t.Errorf("planKey = %q, want it to follow the new root folder", got)
+	}
+}
+
+func TestSelectedPlanOnlyRunsWhatIsSelected(t *testing.T) {
+	m := &uiModel{
+		rows: []resolvedCourse{
+			{CourseSummary: moodle.CourseSummary{ID: 1}, Sync: true},
+			{CourseSummary: moodle.CourseSummary{ID: 2}, Sync: false},
+		},
+		planCache: []syncpkg.Action{
+			{Kind: syncpkg.ActionNew, Entry: moodle.FileEntry{CourseID: 1, RelPath: "Y1S1/Biochip/a.pdf"}},
+			{Kind: syncpkg.ActionNew, Entry: moodle.FileEntry{CourseID: 2, RelPath: "RF CIRCUIT DESIGN/b.pdf"}},
+			{Kind: syncpkg.ActionUnchanged, Entry: moodle.FileEntry{CourseID: 1, RelPath: "Y1S1/Biochip/c.pdf"}},
+		},
+	}
+	got := m.selectedPlan()
+	if len(got) != 2 {
+		t.Fatalf("selected %d actions, want 2 (course 2 is deselected)", len(got))
+	}
+	for _, a := range got {
+		if a.Entry.CourseID != 1 {
+			t.Fatalf("deselected course leaked into the run: %s", a.Entry.RelPath)
+		}
+	}
+	if counts := m.newFileCounts(); counts[2] != 1 {
+		t.Errorf("file counts must cover deselected courses too (you need them to decide): %v", counts)
+	}
+}
+
+func TestShortCourseName(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"095274 - RF CIRCUIT DESIGN (LEVANTINO SALVATORE) [2025-26]", "RF CIRCUIT DESIGN (LEVANTINO SALVATORE) [2025-26]"},
+		{"Ingegneria Elettronica", "Ingegneria Elettronica"},
+		{"12 - A - B", "A - B"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := shortCourseName(c.in); got != c.want {
+			t.Errorf("shortCourseName(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
