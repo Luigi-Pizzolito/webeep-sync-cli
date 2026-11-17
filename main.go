@@ -116,13 +116,37 @@ func ctxWithInterrupt() (context.Context, func()) {
 	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 }
 
+// expandTilde replaces a leading ~ with the user's home folder. Both separators
+// are accepted: a path stored in config on Windows reads as ~\folder, the same
+// idea a shell user types as ~/folder.
 func expandTilde(p string) string {
-	if p == "~" || strings.HasPrefix(p, "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
-			return filepath.Join(home, strings.TrimPrefix(p, "~/"))
-		}
+	if p != "~" && !strings.HasPrefix(p, "~/") && !strings.HasPrefix(p, `~\`) {
+		return p
 	}
-	return p
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return p
+	}
+	return filepath.Join(home, strings.Trim(strings.TrimPrefix(p, "~"), `/\`))
+}
+
+// defaultDownloadDir is where courses go when nothing is configured. It has to
+// resolve to a real path rather than the string "~/WeBeep": filepath.Join builds
+// ~\WeBeep on Windows and only a shell knows what ~ means.
+func defaultDownloadDir() string {
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, "WeBeep")
+	}
+	return "WeBeep"
+}
+
+// pathHint is the example used in messages that reject a relative path. It is
+// built from the home folder so it reads like a path the reader can actually use.
+func pathHint() string {
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, "School", "PoliMi")
+	}
+	return filepath.Join("~", "School", "PoliMi")
 }
 
 func tokenClient() (*moodle.Client, *config.Token, error) {
@@ -525,14 +549,14 @@ func cmdDir(args []string) error {
 		return fmt.Errorf("usage: webeep-sync-cli dir [folder] | --clear")
 	case len(rest) == 0:
 		if conf.DownloadDir == "" {
-			fmt.Println("~/WeBeep (not configured: this is the fallback)")
+			fmt.Printf("%s (not configured: this is the fallback)\n", defaultDownloadDir())
 		} else {
 			fmt.Println(conf.DownloadDir)
 		}
 	default:
 		dir := expandTilde(strings.TrimSpace(rest[0]))
 		if !filepath.IsAbs(dir) {
-			return fmt.Errorf("%s is not an absolute path (try /home/you/School/PoliMi or ~/School/PoliMi)", rest[0])
+			return fmt.Errorf("%s is not an absolute path (try %s or ~/School/PoliMi)", rest[0], pathHint())
 		}
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("creating %s: %w", dir, err)
@@ -591,7 +615,7 @@ func prepareSync(ctx context.Context, conf *config.Config, opts syncOptions) (*s
 		dir = conf.DownloadDir
 	}
 	if dir == "" {
-		dir = filepath.Join("~", "WeBeep")
+		dir = defaultDownloadDir()
 	}
 	dir = expandTilde(dir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -709,7 +733,7 @@ func stdinInteractive() bool {
 func promptDownloadDir(conf *config.Config) (string, error) {
 	current := conf.DownloadDir
 	if current == "" {
-		current = filepath.Join("~", "WeBeep")
+		current = defaultDownloadDir()
 	}
 	for {
 		answer, err := readLine(fmt.Sprintf("which folder should your course folders live in? [%s]: ", current))
@@ -721,7 +745,7 @@ func promptDownloadDir(conf *config.Config) (string, error) {
 		}
 		dir := expandTilde(answer)
 		if !filepath.IsAbs(dir) {
-			fmt.Printf("%s is not an absolute path (try /home/you/School/PoliMi or ~/School/PoliMi)\n", dir)
+			fmt.Printf("%s is not an absolute path (try %s or ~/School/PoliMi)\n", dir, pathHint())
 			continue
 		}
 		if err := os.MkdirAll(dir, 0o755); err != nil {

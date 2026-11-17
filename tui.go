@@ -187,7 +187,7 @@ func (m *uiModel) dir() string {
 	if m.conf.DownloadDir != "" {
 		return expandTilde(m.conf.DownloadDir)
 	}
-	return expandTilde(filepath.Join("~", "WeBeep"))
+	return defaultDownloadDir()
 }
 
 // rebuild re-resolves folders after a mapping or switch changed. No network
@@ -580,7 +580,7 @@ func (m *uiModel) saveEditor() (tea.Model, tea.Cmd) {
 	if m.mode == modeDir {
 		dir := expandTilde(value)
 		if !filepath.IsAbs(dir) {
-			m.errMsg = fmt.Sprintf("%s is not an absolute path (try /home/you/School/PoliMi or ~/School/PoliMi)", value)
+			m.errMsg = fmt.Sprintf("%s is not an absolute path (try %s or ~/School/PoliMi)", value, pathHint())
 			return m, nil
 		}
 		if err := os.MkdirAll(dir, 0o755); err != nil {

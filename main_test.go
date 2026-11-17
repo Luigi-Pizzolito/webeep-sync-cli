@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -301,5 +302,77 @@ func TestQuitDuringSyncReportsWhatSurvived(t *testing.T) {
 
 	if !strings.Contains(m.status, "12/505") {
 		t.Errorf("status = %q, want it to report 12 of 505 files", m.status)
+	}
+}
+
+// TestExpandTildeHandlesBothSeparators: ~ means nothing to Go, so the tool
+// expands it itself. A path stored in config on Windows reads as ~\folder and
+// has to land in the same place ~/folder would.
+func TestExpandTildeHandlesBothSeparators(t *testing.T) {
+	home := filepath.Join(string(filepath.Separator), "home", "student")
+	t.Setenv("HOME", home)
+
+	cases := map[string]string{
+		"~":               home,
+		"~/School":        filepath.Join(home, "School"),
+		`~\School`:        filepath.Join(home, "School"),
+		"~/School/PoliMi": filepath.Join(home, "School", "PoliMi"),
+		"/already/abs":    "/already/abs",
+		"relative/path":   "relative/path",
+		"weird~name":      "weird~name",
+	}
+	for in, want := range cases {
+		if got := expandTilde(in); got != want {
+			t.Errorf("expandTilde(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestDefaultDownloadDirIsAbsolute: the fallback folder is printed as the
+// default answer, and answers are refused unless absolute. A "~..." string is
+// not absolute anywhere, so the default has to be a resolved path.
+func TestDefaultDownloadDirIsAbsolute(t *testing.T) {
+	home := filepath.Join(string(filepath.Separator), "home", "student")
+	t.Setenv("HOME", home)
+
+	got := defaultDownloadDir()
+	if !filepath.IsAbs(got) {
+		t.Errorf("defaultDownloadDir() = %q, want an absolute path", got)
+	}
+	if want := filepath.Join(home, "WeBeep"); got != want {
+		t.Errorf("defaultDownloadDir() = %q, want %q", got, want)
+	}
+}
+
+// TestPromptAcceptsItsOwnDefault: pressing Enter at the folder question must be
+// usable. On Windows the old default was ~\WeBeep, which failed the absolute
+// path check the prompt applies to its own suggestion.
+func TestPromptAcceptsItsOwnDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	in, err := os.CreateTemp(t.TempDir(), "stdin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := in.WriteString("\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := in.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	orig := os.Stdin
+	os.Stdin = in
+	t.Cleanup(func() {
+		in.Close()
+		os.Stdin = orig
+	})
+
+	got, err := promptDownloadDir(&config.Config{})
+	if err != nil {
+		t.Fatalf("accepting the default failed: %v", err)
+	}
+	if want := filepath.Join(home, "WeBeep"); got != want {
+		t.Errorf("promptDownloadDir() = %q, want the default %q", got, want)
 	}
 }
