@@ -189,7 +189,8 @@ Sample rows from a real session layout, not your course list.
 - `p`: preview the plan, and fill the `NEW` column with the number of files each
   course would download, deselected ones included. A `0` means WeBeep has nothing
   new for that course, which is how you decide whether an old instance of it is
-  worth syncing.
+  worth syncing. The preview also names the folders inside your course folders
+  that WeBeep no longer has.
 - `m`: map it to a folder. Folders already under your root are listed and `Tab`
   completes them. Type any other name, or nothing to use the WeBeep course name.
 - `d`: change the root folder, as an absolute path such as `~/School/PoliMi`.
@@ -225,7 +226,10 @@ What keeps your files safe:
   place, the tool prints a warning and puts the second one in its full WeBeep
   name instead, because two courses writing one folder would overwrite each
   other's files.
-- Inside a course folder the layout mirrors WeBeep's sections and modules.
+- Inside a course folder the layout mirrors WeBeep's section and module names as
+  they are today. When WeBeep renames one, the files land in the new folder and
+  the old one stays where it is, so `sync` lists the folders WeBeep no longer
+  has. See `--list-leftovers` and Troubleshooting.
 - A file in one of those folders that WeBeep never downloaded is recorded as
   protected: never overwritten, never deleted.
 
@@ -241,6 +245,7 @@ Flags for `sync`, and `ui` takes `--dir` and `--workers` as well:
 | `--clobber` | Allow overwriting files recorded as local-only. |
 | `--workers N` | Parallel downloads. Default 3. |
 | `--quiet` | Print only the final summary. |
+| `--list-leftovers` | List every folder inside your course folders that WeBeep does not have. Without it, `sync` names only the folders holding material WeBeep now keeps under another name, and counts the rest. |
 | `--exclude-mod NAME` | Also skip a module type, for example `h5p`. Repeatable. |
 
 ## Files the tool writes
@@ -284,8 +289,8 @@ gofmt -l .            # prints nothing
 Covered: token parsing from all three login formats, the layout builder (module
 exclusions, flattening a "Materiali" section, single-file resources, duplicate
 names), each row of the sync rules table, atomic downloads, 404 caching, retries,
-mtime handling, cleanup after an interrupted run. `doctor` is the only command
-that reaches WeBeep without a credential.
+mtime handling, cleanup after an interrupted run, and the report of folders WeBeep
+no longer has. `doctor` is the only command that reaches WeBeep without a credential.
 
 ## Releases and CI
 
@@ -338,6 +343,25 @@ is no client-side fix for a disabled service.
 **A file you annotated carries `changed on WeBeep but is protected`** Your copy
 was never downloaded from WeBeep, so it is yours permanently. If you want the
 WeBeep version, delete your file or run `sync --clobber`.
+
+**A folder you filled earlier looks half empty**
+WeBeep renames its sections and folders, and professors rename them partway through
+the year: a `Lesson Slides` folder under one section turns up as `LESSON slides`
+under another. The tool writes to the names WeBeep uses now and leaves the old folder
+where it is, so the course ends up in two places and the older one stops growing.
+`sync` names those folders and says how many of their file names WeBeep now has
+somewhere else. Sample output:
+
+```
+note: 1 folder(s) hold material WeBeep now keeps under a different name. Nothing is deleted or overwritten:
+  Analisi I/Lesson Slides  11 file(s), 10 of those names are on WeBeep as Introduzione/LESSON slides
+note: 2 other folder(s) in your course folders are not on WeBeep at all: yours, and left alone (use --list-leftovers to see them)
+```
+
+The copy inside the folder WeBeep currently has is the one the tool keeps up to date.
+The old folder is yours to keep or delete, and a file WeBeep dropped entirely only
+survives there. `sync --list-leftovers` lists every folder WeBeep does not have,
+which is the list to work through when you want to tidy up.
 
 **Old files pile up** Nothing is deleted, by design. When a professor removes a
 file your copy stays, and pruning it is your job.

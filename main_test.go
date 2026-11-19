@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -374,5 +375,55 @@ func TestPromptAcceptsItsOwnDefault(t *testing.T) {
 	}
 	if want := filepath.Join(home, "WeBeep"); got != want {
 		t.Errorf("promptDownloadDir() = %q, want the default %q", got, want)
+	}
+}
+
+func TestLeftoverNotesNamesRenamedFoldersAndCountsTheRest(t *testing.T) {
+	leftovers := []syncpkg.Leftover{
+		{RelPath: "Y1S2/ES/Lesson Slides", Files: 11, Matches: 10, LikelyIn: "Introduzione/LESSON slides"},
+		{RelPath: "Y1S2/ES/Course Notes", Files: 2},
+		{RelPath: "Y1S2/ES/Past Exams", Files: 258},
+	}
+
+	short := strings.Join(leftoverNotes(leftovers, false, 10, "use --list-leftovers to see them"), "\n")
+	if !strings.Contains(short, "Lesson Slides  11 file(s), 10 of those names are on WeBeep as Introduzione/LESSON slides") {
+		t.Fatalf("the renamed folder is not explained:\n%s", short)
+	}
+	if strings.Contains(short, "Past Exams") || strings.Contains(short, "Course Notes") {
+		t.Fatalf("your own folders should be counted, not listed:\n%s", short)
+	}
+	if !strings.Contains(short, "2 other folder(s)") {
+		t.Fatalf("the count line is missing:\n%s", short)
+	}
+
+	full := strings.Join(leftoverNotes(leftovers, true, 10, ""), "\n")
+	if !strings.Contains(full, "Past Exams  258 file(s)") || !strings.Contains(full, "Course Notes  2 file(s)") {
+		t.Fatalf("--list-leftovers must list every folder:\n%s", full)
+	}
+	if strings.Contains(full, "--list-leftovers") {
+		t.Fatalf("no need to advertise the flag when it is already on:\n%s", full)
+	}
+
+	if lines := leftoverNotes([]syncpkg.Leftover{{RelPath: "A/B", Files: 1}}, false, 10, ""); len(lines) != 1 {
+		t.Fatalf("a folder of yours should cost one line, got %d: %v", len(lines), lines)
+	}
+	if lines := leftoverNotes(nil, true, 10, ""); len(lines) != 0 {
+		t.Fatalf("nothing to report should print nothing: %v", lines)
+	}
+}
+
+func TestLeftoverNotesTruncatesALongRenamedList(t *testing.T) {
+	var leftovers []syncpkg.Leftover
+	for i := 0; i < 12; i++ {
+		leftovers = append(leftovers, syncpkg.Leftover{
+			RelPath: fmt.Sprintf("Corso/Old %d", i), Files: 4, Matches: 4, LikelyIn: "Now",
+		})
+	}
+	lines := leftoverNotes(leftovers, false, 10, "")
+	if len(lines) != 12 {
+		t.Fatalf("got %d lines, want the 1 header, 10 entries and the rest counted: %v", len(lines), lines)
+	}
+	if lines[11] != "  ... 2 more" {
+		t.Fatalf("last line = %q, want the truncation marker", lines[11])
 	}
 }

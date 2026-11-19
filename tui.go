@@ -902,6 +902,9 @@ func (m *uiModel) planView() string {
 	if unselected > 0 {
 		b.WriteString(uiDim.Render(fmt.Sprintf("%d file(s) belong to courses you deselected: they stay where they are\n", unselected)))
 	}
+	for _, line := range leftoverNotes(syncpkg.LeftoverFolders(selected, m.dir()), false, 3, "") {
+		b.WriteString(uiDim.Render(line) + "\n")
+	}
 
 	shown, maxShown := 0, maxInt(m.height-24, 3)
 	for _, a := range selected {

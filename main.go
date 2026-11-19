@@ -723,6 +723,50 @@ func countActions(actions []syncpkg.Action) map[syncpkg.ActionKind]int {
 	return counts
 }
 
+// leftoverNotes explains the folders inside a course folder that WeBeep does not
+// have. The interesting ones are folders holding material WeBeep now keeps under
+// another name, which is what a renamed section looks like from disk: half the
+// course appears in the old place and half in the new one. Your own folders are
+// counted rather than listed, because a course folder full of your notes is
+// normal and repeating it on every run is noise.
+func leftoverNotes(leftovers []syncpkg.Leftover, listAll bool, maxShown int, hint string) []string {
+	var renamed, other []syncpkg.Leftover
+	for _, l := range leftovers {
+		if l.LikelyIn != "" {
+			renamed = append(renamed, l)
+		} else {
+			other = append(other, l)
+		}
+	}
+
+	var out []string
+	if len(renamed) > 0 {
+		out = append(out, fmt.Sprintf("note: %d folder(s) hold material WeBeep now keeps under a different name. Nothing is deleted or overwritten:", len(renamed)))
+		for i, l := range renamed {
+			if i >= maxShown {
+				out = append(out, fmt.Sprintf("  ... %d more", len(renamed)-i))
+				break
+			}
+			out = append(out, fmt.Sprintf("  %s  %d file(s), %d of those names are on WeBeep as %s", l.RelPath, l.Files, l.Matches, l.LikelyIn))
+		}
+	}
+	if len(other) > 0 {
+		if listAll {
+			out = append(out, fmt.Sprintf("note: %d folder(s) in your course folders are not on WeBeep at all. They stay exactly as they are:", len(other)))
+			for _, l := range other {
+				out = append(out, fmt.Sprintf("  %s  %d file(s)", l.RelPath, l.Files))
+			}
+		} else {
+			line := fmt.Sprintf("note: %d other folder(s) in your course folders are not on WeBeep at all: yours, and left alone", len(other))
+			if hint != "" {
+				line += " (" + hint + ")"
+			}
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
 // stdinInteractive reports whether it is possible to ask the user a question.
 func stdinInteractive() bool {
 	info, err := os.Stdin.Stat()
@@ -795,6 +839,7 @@ func cmdSync(args []string) error {
 	clobber := fs.Bool("clobber", false, "allow overwriting even files recorded as local-only (protected)")
 	all := fs.Bool("all", false, "sync every enrolled course, ignoring disabled ones")
 	quiet := fs.Bool("quiet", false, "print only the final summary")
+	listLeftovers := fs.Bool("list-leftovers", false, "list every folder in your course folders that WeBeep does not have")
 	var courseFlags stringList
 	fs.Var(&courseFlags, "course", "sync only courses whose name contains this text (repeatable)")
 	var extraMods stringList
@@ -869,6 +914,15 @@ func cmdSync(args []string) error {
 		counts[syncpkg.ActionNew], counts[syncpkg.ActionUpdate], counts[syncpkg.ActionUnchanged],
 		counts[syncpkg.ActionAdopt], counts[syncpkg.ActionProtected]+counts[syncpkg.ActionProtectedChanged],
 		counts[syncpkg.ActionNoOverwrite], counts[syncpkg.ActionSkipMissing], counts[syncpkg.ActionLocalIsDir])
+
+	// Folders WeBeep no longer has are the ones people mistake for a sync that
+	// stopped halfway, so name the ones that hold WeBeep's own material and just
+	// count the rest.
+	if !*quiet {
+		for _, line := range leftoverNotes(syncpkg.LeftoverFolders(actions, dir), *listLeftovers, 10, "use --list-leftovers to see them") {
+			fmt.Println(line)
+		}
+	}
 
 	for _, a := range actions {
 		switch a.Kind {
